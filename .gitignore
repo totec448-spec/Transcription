@@ -1,0 +1,53 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+# IDE state is local to whoever opened the project. Some of it — the deployment
+# target selector, for one — records the serial number of the attached device.
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Signing material must never reach the repository.
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+keystore.properties
+
+# Nor secrets in any other shape.
+.env
+.env.*
+secrets.properties
+
+# Build outputs are attached to releases, not committed.
+*.apk
+*.aab
+*.log
+*.hprof
+
+# This is a transcription app, so real voice notes land in the working tree
+# while debugging — an imported WhatsApp message, a pulled recording, an
+# exported backup. None of it should be one `git add .` away from publication.
+*.m4a
+*.mp3
+*.wav
+*.ogg
+*.opus
+*.aac
+*.flac
+*.amr
+*.3gp
+*.zip
+
+# Screen recordings carry the same audio, and a recorded session shows whatever
+# else was on the device at the time.
+*.mp4
+*.mkv
+*.webm

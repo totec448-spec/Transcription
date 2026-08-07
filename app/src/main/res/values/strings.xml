@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Transcription</string>
+    <string name="widget_description">Quick recording and latest transcript</string>
+    <string name="action_record">Record</string>
+    <string name="action_pause_resume">Pause or resume</string>
+    <string name="action_finish">Finish</string>
+    <string name="action_discard">Discard</string>
+    <string name="status_ready">Ready</string>
+    <string name="widget_empty_result">Your latest transcript appears here. Tap to edit it in the app.</string>
+</resources>

@@ -1,0 +1,105 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:orientation="vertical"
+    android:paddingStart="13dp"
+    android:paddingTop="7dp"
+    android:paddingEnd="13dp"
+    android:paddingBottom="11dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/widget_status"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:maxWidth="96dp"
+            android:text="@string/status_ready"
+            android:textColor="@color/widget_foreground"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/widget_separator"
+            android:layout_width="18dp"
+            android:layout_height="match_parent"
+            android:alpha="0.70"
+            android:gravity="center"
+            android:text="•"
+            android:textColor="@color/widget_foreground"
+            android:textSize="18sp" />
+
+        <ImageView
+            android:id="@+id/widget_waveform"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <ImageButton
+            android:id="@+id/widget_pause"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/widget_control_touch"
+            android:contentDescription="@string/action_pause_resume"
+            android:padding="13dp"
+            android:src="@drawable/ic_pause"
+            android:tint="@color/widget_foreground" />
+
+        <ImageButton
+            android:id="@+id/widget_discard"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/widget_control_touch"
+            android:contentDescription="@string/action_discard"
+            android:padding="13dp"
+            android:src="@drawable/ic_close"
+            android:tint="@color/widget_foreground" />
+
+        <ImageButton
+            android:id="@+id/widget_done"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/widget_control_touch"
+            android:contentDescription="@string/action_finish"
+            android:padding="13dp"
+            android:src="@drawable/ic_done"
+            android:tint="@color/widget_foreground" />
+
+        <ImageButton
+            android:id="@+id/widget_record"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:adjustViewBounds="true"
+            android:background="@drawable/widget_button_touch"
+            android:contentDescription="@string/action_record"
+            android:padding="13dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_mic_line" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_result"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@drawable/widget_result_background"
+        android:ellipsize="end"
+        android:maxLines="6"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="10dp"
+        android:text="@string/widget_empty_result"
+        android:textColor="@color/widget_foreground"
+        android:textSize="14sp" />
+</LinearLayout>

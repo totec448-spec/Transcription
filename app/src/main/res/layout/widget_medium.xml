@@ -1,0 +1,85 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="14dp"
+    android:paddingTop="7dp"
+    android:paddingEnd="7dp"
+    android:paddingBottom="7dp">
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:ellipsize="end"
+        android:gravity="center_vertical"
+        android:maxLines="1"
+        android:maxWidth="90dp"
+        android:text="@string/status_ready"
+        android:textColor="@color/widget_foreground"
+        android:textSize="11sp" />
+
+    <TextView
+        android:id="@+id/widget_separator"
+        android:layout_width="18dp"
+        android:layout_height="match_parent"
+        android:alpha="0.70"
+        android:gravity="center"
+        android:text="•"
+        android:textColor="@color/widget_foreground"
+        android:textSize="18sp" />
+
+    <ImageView
+        android:id="@+id/widget_waveform"
+        android:layout_width="0dp"
+        android:layout_height="42dp"
+        android:layout_marginStart="2dp"
+        android:layout_marginEnd="7dp"
+        android:layout_weight="1"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop" />
+
+    <ImageButton
+        android:id="@+id/widget_pause"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/widget_control_touch"
+        android:contentDescription="@string/action_pause_resume"
+        android:padding="13dp"
+        android:src="@drawable/ic_pause"
+        android:tint="@color/widget_foreground" />
+
+    <ImageButton
+        android:id="@+id/widget_discard"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/widget_control_touch"
+        android:contentDescription="@string/action_discard"
+        android:padding="13dp"
+        android:src="@drawable/ic_close"
+        android:tint="@color/widget_foreground" />
+
+    <ImageButton
+        android:id="@+id/widget_done"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/widget_control_touch"
+        android:contentDescription="@string/action_finish"
+        android:padding="13dp"
+        android:src="@drawable/ic_done"
+        android:tint="@color/widget_foreground" />
+
+    <ImageButton
+        android:id="@+id/widget_record"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:adjustViewBounds="true"
+        android:background="@drawable/widget_button_touch"
+        android:contentDescription="@string/action_record"
+        android:padding="13dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_mic_line" />
+</LinearLayout>

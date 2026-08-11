@@ -14,6 +14,15 @@ class SecretStore(context: Context) {
     private val preferences = context.getSharedPreferences("secrets", Context.MODE_PRIVATE)
     private val alias = "openrouter_api_key"
 
+    /**
+     * Cache the Android Keystore handle, never the decrypted API keys.
+     *
+     * Reading a provider key happens on every transcription path. Re-loading the
+     * AndroidKeyStore and resolving the same alias for each read adds work while
+     * gaining nothing: the SecretKey remains a Keystore-backed handle either way.
+     */
+    @Volatile private var cachedKey: SecretKey? = null
+
     fun saveApiKey(value: String) = saveApiKey(ApiKeyProvider.OPENROUTER, value)
 
     fun saveApiKey(provider: ApiKeyProvider, value: String) {
@@ -49,19 +58,25 @@ class SecretStore(context: Context) {
     }
 
     private fun getOrCreateKey(): SecretKey {
-        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (keyStore.getKey(alias, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
-            init(
-                KeyGenParameterSpec.Builder(
-                    alias,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-                )
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .build()
-            )
-            generateKey()
+        cachedKey?.let { return it }
+        return synchronized(this) {
+            cachedKey?.let { return@synchronized it }
+            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val key = (keyStore.getKey(alias, null) as? SecretKey)
+                ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+                    init(
+                        KeyGenParameterSpec.Builder(
+                            alias,
+                            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                        )
+                            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                            .build()
+                    )
+                    generateKey()
+                }
+            cachedKey = key
+            key
         }
     }
 }

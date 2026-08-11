@@ -53,27 +53,47 @@ class UsageStore(context: Context) {
     private val _totals = MutableStateFlow(load())
     val totals: StateFlow<UsageTotals> = _totals
 
+    /**
+     * Keep the hot counter path in memory and persist the already-computed
+     * totals. The old implementation read SharedPreferences several times and
+     * then rebuilt every provider total from disk after each chunk. It also made
+     * the read-modify-write vulnerable to two concurrent transcription jobs
+     * losing an increment. One synchronized in-memory update avoids both costs.
+     */
+    @Synchronized
     fun record(
         provider: TranscriptionProvider,
         seconds: Double,
         costUsd: Double?,
         estimated: Boolean
     ) {
+        val previousByProvider = _totals.value.perProvider.associateBy(ProviderUsage::provider)
+        val previous = previousByProvider[provider] ?: ProviderUsage(provider)
+        val next = previous.copy(
+            requests = previous.requests + 1,
+            seconds = previous.seconds + seconds,
+            costUsd = previous.costUsd + (costUsd ?: 0.0),
+            estimated = previous.estimated || estimated || costUsd == null
+        )
+        _totals.value = UsageTotals(
+            TranscriptionProvider.entries.mapNotNull { candidate ->
+                if (candidate == provider) next else previousByProvider[candidate]
+            }
+        )
+
         val key = provider.name
-        val editor = preferences.edit()
-            .putInt("${key}_requests", preferences.getInt("${key}_requests", 0) + 1)
-            .putFloat("${key}_seconds", (preferences.getFloat("${key}_seconds", 0f) + seconds).toFloat())
-        costUsd?.let {
-            editor.putFloat("${key}_cost", (preferences.getFloat("${key}_cost", 0f) + it).toFloat())
-        }
-        if (estimated || costUsd == null) editor.putBoolean("${key}_estimated", true)
-        editor.apply()
-        _totals.value = load()
+        preferences.edit()
+            .putInt("${key}_requests", next.requests)
+            .putFloat("${key}_seconds", next.seconds.toFloat())
+            .putFloat("${key}_cost", next.costUsd.toFloat())
+            .putBoolean("${key}_estimated", next.estimated)
+            .apply()
     }
 
+    @Synchronized
     fun reset() {
         preferences.edit().clear().apply()
-        _totals.value = load()
+        _totals.value = UsageTotals()
     }
 
     private fun load() = UsageTotals(

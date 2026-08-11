@@ -12,12 +12,18 @@ class SettingsStore(context: Context) {
     val settings: StateFlow<AppSettings> = _settings
 
     fun update(transform: (AppSettings) -> AppSettings) {
-        val proposed = transform(_settings.value).let {
+        val current = _settings.value
+        val proposed = transform(current).let {
             it.copy(cleanupMinimumInstructionWords = it.cleanupMinimumInstructionWords.coerceIn(0, 50))
         }
         val value = if (proposed.fallbackModel.isBlank() || proposed.fallbackModel == proposed.selectedModel) {
             proposed.copy(fallbackModel = defaultFallbackFor(proposed.selectedModel))
         } else proposed
+
+        // Avoid rebuilding the preference edit and unconditionally signalling
+        // BackupManager when normalization resolved to the state we already have.
+        if (value == current) return
+
         _settings.value = value
         val editor = preferences.edit()
         // One key per mode, present only while an edit exists: a mode put back

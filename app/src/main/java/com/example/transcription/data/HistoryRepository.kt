@@ -100,17 +100,29 @@ class HistoryRepository(context: Context) {
 
     @Synchronized
     fun updateProgress(id: String, label: String, completedChunks: Int, chunkCount: Int, queuePosition: Int = 0) {
-        _entries.value = _entries.value.map {
-            if (it.id == id) it.copy(
-                processing = true,
-                progressLabel = label,
-                completedChunks = completedChunks,
-                chunkCount = chunkCount.coerceAtLeast(1),
-                queuePosition = queuePosition.coerceAtLeast(0),
-                failureMessage = null
-            ) else it
-        }
-        persist()
+        val current = _entries.value
+        val index = current.indexOfFirst { it.id == id }
+        if (index < 0) return
+
+        val previous = current[index]
+        val next = previous.copy(
+            processing = true,
+            progressLabel = label,
+            completedChunks = completedChunks,
+            chunkCount = chunkCount.coerceAtLeast(1),
+            queuePosition = queuePosition.coerceAtLeast(0),
+            failureMessage = null
+        )
+        if (next == previous) return
+
+        _entries.value = current.toMutableList().apply { this[index] = next }
+
+        // The first transition into processing is durable so a process death is
+        // still recognized as an interrupted job. Labels, queue positions and
+        // intermediate chunk counters are live UI state and readEntries()
+        // deliberately discards them after a restart, so rewriting and syncing
+        // the entire history file for every progress tick only creates I/O.
+        if (!previous.processing) persist()
     }
 
     @Synchronized

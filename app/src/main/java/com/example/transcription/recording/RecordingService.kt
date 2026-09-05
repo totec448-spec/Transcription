@@ -546,9 +546,7 @@ class RecordingService : Service() {
                     // The previous fixed 48 dB window left quiet hardware — which
                     // most phones are — permanently pinned near the baseline.
                     val level = micLevel.accept(raw)
-                    RecordingController.update {
-                        it.copy(elapsedMs = elapsed, amplitude = level, waveform = (it.waveform + level).takeLast(48))
-                    }
+                    RecordingController.update { it.withLevel(elapsed, level) }
                     val now = android.os.SystemClock.elapsedRealtime()
                     if (now - lastWidgetUpdateMs >= WIDGET_UPDATE_MS) {
                         lastWidgetUpdateMs = now

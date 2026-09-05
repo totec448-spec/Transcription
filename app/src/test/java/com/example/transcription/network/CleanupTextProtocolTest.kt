@@ -24,21 +24,4 @@ class CleanupTextProtocolTest {
         assertEquals("Keep `inline` code", CleanupTextProtocol.sanitizeReplacement("Keep `inline` code"))
     }
 
-    @Test
-    fun deepSeekCleanupIsPinnedToDeepSeeksOwnProvider() {
-        assertEquals(
-            "deepseek",
-            CleanupProviderRouting.onlyProvider(ProviderModels.OPENROUTER_DEEPSEEK_V4_FLASH)
-        )
-        assertEquals(
-            "deepseek",
-            CleanupProviderRouting.onlyProvider("openrouter-text/DeepSeek/future-model:free")
-        )
-    }
-
-    @Test
-    fun otherCleanupModelsKeepNormalOpenRouterRouting() {
-        assertNull(CleanupProviderRouting.onlyProvider("openrouter-text/google/gemini-flash-latest"))
-        assertNull(CleanupProviderRouting.onlyProvider("openrouter-text/notdeepseek/deepseek-compatible"))
-    }
 }

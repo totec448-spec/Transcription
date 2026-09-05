@@ -11,9 +11,8 @@ Run:
 `PriceNormalizerTest` covers per-minute, per-second, per-hour, and token-estimated price normalization. `LanguageCodeTest` covers valid, legacy, locale-tagged, and invalid language inputs. `ModelLanguageCatalogTest` covers model-family profiles and unknown-model behavior. `TranscriptionRequestWriterTest` verifies the current OpenRouter JSON/Base64 request shape, exact content length, actual compressed import formats, and rejection of uncompressed upload formats. `AudioImportFormatTest` covers direct MP3, M4A, and WhatsApp OGG/Opus handling plus native conversion selection for uncompressed input. `TranscriptionFallbackTest` verifies attempt order, no unnecessary second request, successful fallback attribution, same-model protection, and combined failure text. `AudioCaptureOptionsTest` verifies accepted capture values and safe defaults for invalid persisted values. `TranscriptionEntryTest` verifies that only a non-blank persisted error marks an archived entry as failed.
 
 `CleanupTextProtocolTest` verifies strict separation of original text and spoken
-instruction, bounded removal of accidental outer Markdown fences, and that all
-DeepSeek cleanup IDs resolve to the original `deepseek` provider while other
-model families remain unpinned.
+instruction and bounded removal of accidental outer Markdown fences. Cleanup requests
+use latency-first routing with provider fallback, including DeepSeek.
 `ModelCatalogRetentionTest` verifies that a failed partial refresh retains only
 that provider's last-known-good models and that a successful slice replaces it.
 
@@ -81,7 +80,7 @@ Connected-device proof now includes FIFO imports, a real two-part MP3, accumulat
     finish check without an active-recording notification, dictate one narrow
     change, then tap again. Confirm the complete target is replaced, only the
     requested change occurred, no new Note was created, no auto-copy Toast
-    appeared, and `cache/cleanup/instruction.m4a` no longer exists.
+    appeared, and the temporary `cache/cleanup/instruction-*.m4a` no longer exists.
     Confirm Cleanup is immediately left of Copy in both transcript surfaces;
     while active, X is the only control between Cleanup and Copy.
 40. **Cleanup IME** — in a host editor, confirm Space is symmetric with Delete
@@ -99,9 +98,10 @@ Connected-device proof now includes FIFO imports, a real two-part MP3, accumulat
     generation; only a real primary failure may add the configured STT fallback.
     Set minimum instruction words to 8, then test silence, punctuation-only STT,
     seven meaningful words, and exactly eight meaningful words. The first three
-    must return quietly to idle after STT, preserve the text, delete temporary
+    must show an actionable error after STT, preserve the text, delete temporary
     audio, and create no edit-model generation. Exactly eight must create one
-    edit-model generation. Set the value to 0 and confirm the guard is disabled.
+    edit-model generation. Set the value to 0 and confirm short words work but silence/punctuation is rejected.
+    With the default 1, test "K�rzer", "Mach das freundlicher", and "Als Stichpunkte".
 42. **Catalog retention and TTL** — populate all catalogs, then independently
     fail OpenRouter STT and OpenRouter text refreshes. Relaunch and
     confirm each failed provider keeps its prior models. Confirm normal app/IME

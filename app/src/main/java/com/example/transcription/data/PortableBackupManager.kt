@@ -162,7 +162,7 @@ class PortableBackupManager(
         multimodalReasoningEffort = json.optString("multimodalReasoningEffort", "auto"),
         cleanupModel = json.optString("cleanupModel", ProviderModels.OPENROUTER_DEEPSEEK_V4_PRO),
         cleanupPrompt = json.optString("cleanupPrompt", DEFAULT_CLEANUP_PROMPT)
-            .takeIf { it.isNotBlank() && it.trim() != SUPERSEDED_CLEANUP_PROMPT_V1 }
+            .takeIf { it.isNotBlank() && it.trim() !in setOf(SUPERSEDED_CLEANUP_PROMPT_V1, DEFAULT_CLEANUP_PROMPT_V2) }
             ?: DEFAULT_CLEANUP_PROMPT,
         cleanupReasoningEffort = json.optString("cleanupReasoningEffort", "none"),
         baseCleanupMode = BaseCleanupMode.fromStored(json.optString("baseCleanupMode", BaseCleanupMode.CLEAN.stored)),

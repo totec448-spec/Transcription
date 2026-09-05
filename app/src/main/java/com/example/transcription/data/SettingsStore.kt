@@ -78,6 +78,15 @@ class SettingsStore(context: Context) {
     }
 
     private fun load(): AppSettings {
+        // Version 1.0 persisted the eight-word default along with every settings edit.
+        // Migrate that legacy default once; retain other explicit thresholds.
+        if (!preferences.getBoolean("short_cleanup_instructions_v2", false)) {
+            val migration = preferences.edit().putBoolean("short_cleanup_instructions_v2", true)
+            if (preferences.getInt("cleanup_minimum_instruction_words", 8) == 8) {
+                migration.putInt("cleanup_minimum_instruction_words", DEFAULT_CLEANUP_MINIMUM_INSTRUCTION_WORDS)
+            }
+            migration.apply()
+        }
         // Decided before anything else writes to the file: an install that has
         // already stored settings predates onboarding and must never see it.
         // The answer is pinned immediately, because the very next lines create
@@ -122,7 +131,7 @@ class SettingsStore(context: Context) {
                 ?: ProviderModels.OPENROUTER_DEEPSEEK_V4_FLASH,
             cleanupPrompt = preferences.getString("cleanup_prompt", DEFAULT_CLEANUP_PROMPT)
                 ?.takeIf(String::isNotBlank)
-                ?.takeIf { it.trim() != SUPERSEDED_CLEANUP_PROMPT_V1 }
+                ?.takeIf { it.trim() !in setOf(SUPERSEDED_CLEANUP_PROMPT_V1, DEFAULT_CLEANUP_PROMPT_V2) }
                 ?: DEFAULT_CLEANUP_PROMPT,
             cleanupReasoningEffort = preferences.getString("cleanup_reasoning_effort", "none")
                 ?.lowercase()

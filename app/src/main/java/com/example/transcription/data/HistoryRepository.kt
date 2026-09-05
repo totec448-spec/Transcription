@@ -98,19 +98,37 @@ class HistoryRepository(context: Context) {
         persist()
     }
 
+    /**
+     * Progress is published to the flow on every tick but only written to disk
+     * when the durable part of it changes.
+     *
+     * A transcription reports a new label for each stage and each part, and
+     * every one of those used to re-serialize the complete note list — every
+     * transcript the user has ever recorded — to answer "is it uploading or
+     * waiting". Nothing in that write survives a restart: [readEntries] forces
+     * `processing` to false, and `progressLabel` is only ever rendered while
+     * `processing` is true, so a restored label cannot be displayed. What does
+     * survive is the stored `processing` flag, which is how an interrupted note
+     * is recognized on the next launch — so the write is kept for exactly the
+     * tick that raises it, and skipped for the ones that only move the label.
+     */
     @Synchronized
     fun updateProgress(id: String, label: String, completedChunks: Int, chunkCount: Int, queuePosition: Int = 0) {
+        var durableChange = false
         _entries.value = _entries.value.map {
-            if (it.id == id) it.copy(
-                processing = true,
-                progressLabel = label,
-                completedChunks = completedChunks,
-                chunkCount = chunkCount.coerceAtLeast(1),
-                queuePosition = queuePosition.coerceAtLeast(0),
-                failureMessage = null
-            ) else it
+            if (it.id == id) {
+                if (!it.processing || !it.failureMessage.isNullOrBlank()) durableChange = true
+                it.copy(
+                    processing = true,
+                    progressLabel = label,
+                    completedChunks = completedChunks,
+                    chunkCount = chunkCount.coerceAtLeast(1),
+                    queuePosition = queuePosition.coerceAtLeast(0),
+                    failureMessage = null
+                )
+            } else it
         }
-        persist()
+        if (durableChange) persist()
     }
 
     @Synchronized

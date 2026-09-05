@@ -134,6 +134,9 @@ internal data class ResolvedCleanupReasoning(val include: Boolean, val effort: S
  * own configured effort but resolve it against the same model capabilities.
  */
 internal object CleanupReasoningResolver {
+    /** Settings that mean "no effort was chosen", so the model's own default wins. */
+    private val UNSET_EFFORTS = setOf("none", "auto")
+
     fun resolve(model: TranscriptionModel, configured: String): ResolvedCleanupReasoning {
         val supportsReasoning = model.reasoningMandatory ||
             model.reasoningEfforts.isNotEmpty() ||
@@ -141,7 +144,7 @@ internal object CleanupReasoningResolver {
         if (!supportsReasoning) return ResolvedCleanupReasoning(include = false, effort = null)
         val normalized = configured.lowercase()
         val effort = when {
-            model.reasoningMandatory && normalized in setOf("none", "auto") ->
+            model.reasoningMandatory && normalized in UNSET_EFFORTS ->
                 model.defaultReasoningEffort ?: model.reasoningEfforts.firstOrNull() ?: "high"
             normalized == "auto" -> null
             else -> normalized

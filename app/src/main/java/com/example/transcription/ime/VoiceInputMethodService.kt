@@ -124,6 +124,24 @@ class VoiceInputMethodService : InputMethodService() {
 
     private var palette = ImePalette.light()
     private var options: List<ModelOption> = emptyList()
+        set(value) {
+            field = value
+            groupTotals = value.groupingBy(ModelOption::group).eachCount()
+        }
+
+    /**
+     * How many options each group holds.
+     *
+     * [scheduleModelPageLoad] runs on every scroll frame and used to answer this
+     * by counting [options] once per open group — a full scan of the catalog,
+     * several hundred models, for every frame of a flick. The catalog only
+     * changes when [options] is assigned, so it is counted there instead.
+     */
+    private var groupTotals: Map<String, Int> = emptyMap()
+
+    /** What the model browser's views currently show, so it is rebuilt only when they are wrong. */
+    private var renderedOptions: List<ModelOption>? = null
+    private var renderedSelection: String? = null
     private var selectedModelId = ""
     private var streaming: StreamingVoiceSession? = null
     private var composingFinal = ""
@@ -135,6 +153,7 @@ class VoiceInputMethodService : InputMethodService() {
     private var liveGatePaused = false
     private var lastLiveWidgetUpdateMs = 0L
     private var liveFinalize: Runnable? = null
+    private var liveFinalizeDeadline = 0L
     private var batchRequestId: String? = null
     private var enterBehavior = ImeInteractionPolicy.enterBehavior(0, 0)
     private var batchWatch: Job? = null
@@ -266,7 +285,13 @@ class VoiceInputMethodService : InputMethodService() {
                 selectedModelId = resolveImeModel()
             }
             updateModelControl()
-            rebuildModelBrowser()
+            // The browser is a few hundred views behind a closed overlay every
+            // time this runs, and most keyboard opens see exactly the catalog,
+            // the keys and the selection they saw last time. Rebuilding it then
+            // inflates the same rows to arrive at the same picture.
+            if (options != renderedOptions || selectedModelId != renderedSelection) {
+                rebuildModelBrowser()
+            }
             showIdle()
         }
     }
@@ -1451,6 +1476,9 @@ class VoiceInputMethodService : InputMethodService() {
                     latestPartial = ""
                     renderLiveStatus(composingFinal)
                 }
+                // A final that lands while we are finishing is the answer we
+                // were waiting for, so stop waiting the full budget for it.
+                advanceLiveFinalize()
             },
             onAmplitude = {
                 mic.level = it
@@ -1507,11 +1535,7 @@ class VoiceInputMethodService : InputMethodService() {
     private fun publishLiveLevel(level: Float) {
         val elapsed = (SystemClock.elapsedRealtime() - streamingStartedAt).coerceAtLeast(0L)
         RecordingController.update { state ->
-            if (!state.isLive) state else state.copy(
-                elapsedMs = elapsed,
-                amplitude = level,
-                waveform = (state.waveform + level).takeLast(48)
-            )
+            if (!state.isLive) state else state.withLevel(elapsed, level)
         }
         val now = SystemClock.elapsedRealtime()
         if (now - lastLiveWidgetUpdateMs >= LIVE_WIDGET_UPDATE_MS) {
@@ -1571,7 +1595,10 @@ class VoiceInputMethodService : InputMethodService() {
             }
             sendLiveAction(RecordingService.ACTION_LIVE_REFRESH)
             showProcessing("Finishing live transcript…")
+            liveFinalizeDeadline = SystemClock.elapsedRealtime() + LIVE_FINALIZE_MAX_WAIT_MS
             val finalize = Runnable {
+                liveFinalize = null
+                if (streaming !== activeStreaming) return@Runnable
                 currentInputConnection?.finishComposingText()
                 val text = liveTranscriptText()
                 val mode = BaseTextProcessor.effectiveMode(AppContainer.settings.settings.value)
@@ -1586,6 +1613,7 @@ class VoiceInputMethodService : InputMethodService() {
                     Thread {
                         val cleaned = BaseTextProcessor.process(text, settings, cleanupModels)
                         handler.post {
+                            if (streaming !== activeStreaming) return@post
                             val applied = if (cleaned != text) replaceLiveTranscript(text, cleaned) else false
                             completeLiveSession(activeStreaming, if (applied) cleaned else text)
                         }
@@ -1593,11 +1621,30 @@ class VoiceInputMethodService : InputMethodService() {
                 }
             }
             liveFinalize = finalize
-            handler.postDelayed(finalize, 1_100L)
+            handler.postDelayed(finalize, LIVE_FINALIZE_MAX_WAIT_MS)
         } else {
             sendRecordingAction(RecordingService.ACTION_FINISH)
             showProcessing("Transcribing…")
         }
+    }
+
+    /**
+     * Brings the pending finalize forward once the provider has answered.
+     *
+     * Finishing used to sit on a flat [LIVE_FINALIZE_MAX_WAIT_MS] whatever
+     * happened, so "Finishing live transcript…" stayed on screen for a full
+     * second after the transcript was already in the field — the wait was
+     * budgeted for the worst case and then charged to every case. The budget
+     * is still the ceiling; a final that arrives simply collapses it to
+     * [LIVE_FINALIZE_SETTLE_MS], which is short enough to feel immediate and
+     * long enough to absorb a second final from the same commit.
+     */
+    private fun advanceLiveFinalize() {
+        val finalize = liveFinalize ?: return
+        val remaining = liveFinalizeDeadline - SystemClock.elapsedRealtime()
+        if (remaining <= LIVE_FINALIZE_SETTLE_MS) return
+        handler.removeCallbacks(finalize)
+        handler.postDelayed(finalize, minOf(LIVE_FINALIZE_SETTLE_MS, remaining))
     }
 
     private fun completeLiveSession(session: StreamingVoiceSession, text: String) {
@@ -1783,16 +1830,17 @@ class VoiceInputMethodService : InputMethodService() {
         mic.isEnabled = true
         mic.active = true
         mic.contentDescription = "Finish voice input"
+        val live = isLiveModel()
         status.visibility = View.VISIBLE
-        setStatusText(if (isLiveModel()) "LIVE" else "00:00")
+        setStatusText(if (live) "LIVE" else "00:00")
         spaceKey.visibility = View.GONE
         abandon.visibility = View.VISIBLE
-        pause.visibility = if (isLiveModel()) View.GONE else View.VISIBLE
-        deleteKey.visibility = if (isLiveModel()) View.VISIBLE else View.GONE
+        pause.visibility = if (live) View.GONE else View.VISIBLE
+        deleteKey.visibility = if (live) View.VISIBLE else View.GONE
         cleanupKey.visibility = View.GONE
         enterKey.visibility = View.INVISIBLE
         deleteKey.isEnabled = true
-        if (isLiveModel()) deleteKey.bringToFront()
+        if (live) deleteKey.bringToFront()
         pause.text = "Ⅱ"
     }
 
@@ -1908,7 +1956,10 @@ class VoiceInputMethodService : InputMethodService() {
             modelGroupExpansionOverrides.clear()
             modelRenderedCounts.clear()
             modelGroupRows.clear()
-            if (previousPanel == ImePanel.MODELS) modelList.removeAllViews()
+            if (previousPanel == ImePanel.MODELS) {
+                modelList.removeAllViews()
+                renderedOptions = null
+            }
             if (previousPanel == ImePanel.HISTORY) {
                 historyEntries = emptyList()
                 historyRenderedCount = 0
@@ -2174,15 +2225,21 @@ class VoiceInputMethodService : InputMethodService() {
 
     private fun rebuildModelBrowser() {
         if (!::modelList.isInitialized) return
+        renderedOptions = options
+        renderedSelection = selectedModelId
         modelList.removeAllViews()
         modelGroupRows.clear()
         val byGroup = options.groupBy(ModelOption::group)
+        // Resolved once per group rather than once per pass over it: the group
+        // and its availability are both needed to filter, to sort, and to draw.
         MODEL_GROUPS
-            .filter { byGroup[it].orEmpty().isNotEmpty() }
-            .sortedBy { groupName -> if (byGroup[groupName].orEmpty().any(ModelOption::keyAvailable)) 0 else 1 }
-            .forEach { groupName ->
-            val groupOptions = byGroup[groupName].orEmpty()
-            val groupAvailable = groupOptions.any(ModelOption::keyAvailable)
+            .mapNotNull { name ->
+                byGroup[name]?.takeIf(List<ModelOption>::isNotEmpty)?.let { groupOptions ->
+                    Triple(name, groupOptions, groupOptions.any(ModelOption::keyAvailable))
+                }
+            }
+            .sortedBy { (_, _, groupAvailable) -> if (groupAvailable) 0 else 1 }
+            .forEach { (groupName, groupOptions, groupAvailable) ->
             val expanded = modelGroupExpansionOverrides[groupName]
                 ?: !BrowserRenderingPolicy.modelGroupStartsCollapsed(groupOptions.size)
             modelList.addView(
@@ -2261,8 +2318,7 @@ class VoiceInputMethodService : InputMethodService() {
 
     private fun appendModelPage() {
         val groupName = modelGroupRows.keys.firstOrNull { name ->
-            val total = options.count { it.group == name }
-            modelRenderedCounts.getOrDefault(name, 0) < total
+            modelRenderedCounts.getOrDefault(name, 0) < groupTotals.getOrDefault(name, 0)
         } ?: return
         val rows = modelGroupRows[groupName] ?: return
         val groupOptions = options
@@ -2276,7 +2332,7 @@ class VoiceInputMethodService : InputMethodService() {
 
     private fun scheduleModelPageLoad(scrollY: Int) {
         val hasMore = modelGroupRows.keys.any { name ->
-            modelRenderedCounts.getOrDefault(name, 0) < options.count { it.group == name }
+            modelRenderedCounts.getOrDefault(name, 0) < groupTotals.getOrDefault(name, 0)
         }
         if (!hasMore) {
             pendingModelPageLoad?.let(handler::removeCallbacks)
@@ -2708,6 +2764,17 @@ class VoiceInputMethodService : InputMethodService() {
         // taking its height out of the recorder would crowd the microphone.
         const val KEYBOARD_SCREEN_FRACTION = 0.43f
         const val LIVE_WIDGET_UPDATE_MS = 600L
+
+        /**
+         * The longest a live session may spend finishing when the provider
+         * never answers the closing commit. Both transports close their socket
+         * inside a second of [StreamingVoiceSession.accept], so anything still
+         * outstanding here is not coming.
+         */
+        const val LIVE_FINALIZE_MAX_WAIT_MS = 1_100L
+
+        /** How long a received final waits for a second one from the same commit. */
+        const val LIVE_FINALIZE_SETTLE_MS = 220L
 
         /**
          * How long typing must settle before it costs a snapshot. Long enough

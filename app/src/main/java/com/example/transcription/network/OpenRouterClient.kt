@@ -21,17 +21,29 @@ import java.util.Base64
 class OpenRouterClient {
     @Volatile private var rewriteConnection: HttpURLConnection? = null
     @Volatile private var processConnection: HttpURLConnection? = null
-    fun fetchTranscriptionModels(apiKey: String = ""): List<TranscriptionModel> {
-        val connection = (URL("https://openrouter.ai/api/v1/models?output_modalities=transcription")
+    /**
+     * One catalog GET for both listings, which differ only in the modality they
+     * ask for. The status is read once and handed to [readBody] rather than
+     * being asked for again afterwards: `responseCode` is what triggers the
+     * exchange, so the second read was a second look at a value that could no
+     * longer change.
+     */
+    private fun fetchCatalog(outputModality: String, apiKey: String): JSONArray {
+        val connection = (URL("$MODELS_URL?output_modalities=$outputModality")
             .openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 20_000
             if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
         }
-        val body = connection.readBody()
-        if (connection.responseCode !in 200..299) throw OpenRouterException(connection.responseCode, errorMessage(body))
-        val array = JSONObject(body).getJSONArray("data")
+        val status = connection.responseCode
+        val body = connection.readBody(status)
+        if (status !in 200..299) throw OpenRouterException(status, errorMessage(body))
+        return JSONObject(body).getJSONArray("data")
+    }
+
+    fun fetchTranscriptionModels(apiKey: String = ""): List<TranscriptionModel> {
+        val array = fetchCatalog("transcription", apiKey)
         return buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
@@ -47,11 +59,7 @@ class OpenRouterClient {
                         priceNote = PriceNormalizer.note(id),
                         createdAt = item.optLong("created"),
                         provider = TranscriptionProvider.OPENROUTER_STT,
-                        supportedParameters = buildSet {
-                            if (parameters != null) for (parameterIndex in 0 until parameters.length()) {
-                                add(parameters.optString(parameterIndex))
-                            }
-                        }
+                        supportedParameters = parameters.stringValues().toSet()
                     )
                 )
             }
@@ -59,16 +67,7 @@ class OpenRouterClient {
     }
 
     fun fetchTextCatalog(apiKey: String = ""): OpenRouterTextCatalog {
-        val connection = (URL("https://openrouter.ai/api/v1/models?output_modalities=text")
-            .openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 15_000
-            readTimeout = 20_000
-            if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
-        }
-        val body = connection.readBody()
-        if (connection.responseCode !in 200..299) throw OpenRouterException(connection.responseCode, errorMessage(body))
-        val array = JSONObject(body).getJSONArray("data")
+        val array = fetchCatalog("text", apiKey)
         val multimodal = mutableListOf<TranscriptionModel>()
         val text = mutableListOf<TranscriptionModel>()
         for (index in 0 until array.length()) {
@@ -83,11 +82,7 @@ class OpenRouterClient {
             val parameters = item.optJSONArray("supported_parameters")
             val reasoning = item.optJSONObject("reasoning")
             val id = item.getString("id")
-            val commonParameters = buildSet {
-                if (parameters != null) for (parameterIndex in 0 until parameters.length()) {
-                    add(parameters.optString(parameterIndex))
-                }
-            }
+            val commonParameters = parameters.stringValues().toSet()
             val reasoningEfforts = reasoning?.optJSONArray("supported_efforts").stringValues()
             val defaultReasoning = reasoning?.optString("default_effort")?.takeIf(String::isNotBlank)
             val reasoningMandatory = reasoning?.optBoolean("mandatory", false) == true
@@ -147,67 +142,22 @@ class OpenRouterClient {
         includeTemperature: Boolean,
         timeoutSeconds: Int
     ): ProcessedText {
-        require(apiKey.isNotBlank()) { "Add your OpenRouter API key in Settings, then retry." }
         require(originalText.isNotBlank()) { "There is no text to edit." }
         require(spokenInstruction.isNotBlank()) { "No edit instruction was understood." }
-        val payload = JSONObject()
-            .put("model", ProviderModels.openRouterId(model))
-            .put(
-                "messages",
-                JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", systemPrompt))
-                    .put(
-                        JSONObject().put("role", "user").put(
-                            "content",
-                            CleanupTextProtocol.userMessage(originalText, spokenInstruction)
-                        )
-                    )
-            )
-            .applyCleanupProviderRouting(model)
-        if (includeReasoning) {
-            payload.put(
-                "reasoning",
-                JSONObject().put("effort", reasoningEffort ?: "none").put("exclude", true)
-            )
-        }
-        if (includeTemperature) payload.put("temperature", 0)
-        payload.put("usage", JSONObject().put("include", true))
-        val connection = (URL("https://openrouter.ai/api/v1/chat/completions")
-            .openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = minOf(timeoutSeconds, 20) * 1_000
-            readTimeout = timeoutSeconds * 1_000
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("X-OpenRouter-Title", "Scribe V2 Cleanup")
-        }
-        rewriteConnection = connection
-        try {
-            connection.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { it.write(payload.toString()) }
-            val status = connection.responseCode
-            val body = connection.readBody(status)
-            if (status !in 200..299) throw OpenRouterException(status, errorMessage(body))
-            val json = JSONObject(body)
-            json.opt("error")?.let { throw OpenRouterException(status, errorMessage(body)) }
-            val content = json.optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.optString("content")
-                .orEmpty()
-                .trim()
-            require(content.isNotBlank()) { "OpenRouter returned no replacement text." }
-            val usage = json.optJSONObject("usage")
-            return ProcessedText(
-                text = CleanupTextProtocol.sanitizeReplacement(content),
-                costUsd = usage?.optDouble("cost")?.takeIf { !it.isNaN() },
-                totalTokens = usage?.optLong("total_tokens")?.takeIf { it > 0L }
-            )
-        } finally {
-            if (rewriteConnection === connection) rewriteConnection = null
-            connection.disconnect()
-        }
+        return chatCompletion(
+            apiKey = apiKey,
+            model = model,
+            systemPrompt = systemPrompt,
+            userMessage = CleanupTextProtocol.userMessage(originalText, spokenInstruction),
+            reasoningEffort = reasoningEffort,
+            includeReasoning = includeReasoning,
+            includeTemperature = includeTemperature,
+            timeoutSeconds = timeoutSeconds,
+            title = "Scribe V2 Cleanup",
+            emptyMessage = "OpenRouter returned no replacement text.",
+            assign = { rewriteConnection = it },
+            release = { connection -> if (rewriteConnection === connection) rewriteConnection = null }
+        )
     }
 
     fun cancelRewrite() {
@@ -234,17 +184,71 @@ class OpenRouterClient {
         includeTemperature: Boolean,
         timeoutSeconds: Int
     ): ProcessedText {
-        require(apiKey.isNotBlank()) { "Add your OpenRouter API key in Settings, then retry." }
         require(text.isNotBlank()) { "There is no text to process." }
+        return chatCompletion(
+            apiKey = apiKey,
+            model = model,
+            systemPrompt = systemPrompt,
+            userMessage = text,
+            reasoningEffort = reasoningEffort,
+            includeReasoning = includeReasoning,
+            includeTemperature = includeTemperature,
+            timeoutSeconds = timeoutSeconds,
+            title = "Transcription base cleanup",
+            emptyMessage = "OpenRouter returned no processed text.",
+            assign = { processConnection = it },
+            release = { connection -> if (processConnection === connection) processConnection = null }
+        )
+    }
+
+    fun cancelProcess() {
+        processConnection?.disconnect()
+        processConnection = null
+    }
+
+    /**
+     * The one chat-completions request both text passes make.
+     *
+     * They differ in three things — how the user message is built, which title
+     * the call is billed under, and which field holds the connection so the
+     * right one can be cancelled — and were otherwise the same sixty lines
+     * twice, which is how the two drifted into wording their "returned
+     * nothing" errors differently for the same failure.
+     *
+     * The connection is deliberately not disconnected on the way out. Android
+     * backs `HttpURLConnection` with a pooled OkHttp client, and `disconnect()`
+     * is the one call that takes the socket out of that pool: it made every
+     * cleanup pay a fresh DNS lookup, TCP connect and TLS handshake to a host
+     * the app had just finished talking to. Reading the body to the end and
+     * closing it — which [readBody] does — is what returns a connection for
+     * reuse, so the two passes that run back to back after a recording now
+     * share one. Cancellation still disconnects, because there the point is
+     * precisely to destroy the socket.
+     */
+    private fun chatCompletion(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userMessage: String,
+        reasoningEffort: String?,
+        includeReasoning: Boolean,
+        includeTemperature: Boolean,
+        timeoutSeconds: Int,
+        title: String,
+        emptyMessage: String,
+        assign: (HttpURLConnection) -> Unit,
+        release: (HttpURLConnection) -> Unit
+    ): ProcessedText {
+        require(apiKey.isNotBlank()) { "Add your OpenRouter API key in Settings, then retry." }
         val payload = JSONObject()
             .put("model", ProviderModels.openRouterId(model))
             .put(
                 "messages",
                 JSONArray()
                     .put(JSONObject().put("role", "system").put("content", systemPrompt))
-                    .put(JSONObject().put("role", "user").put("content", text))
+                    .put(JSONObject().put("role", "user").put("content", userMessage))
             )
-            .applyCleanupProviderRouting(model)
+            .applyCleanupProviderRouting()
         if (includeReasoning) {
             payload.put(
                 "reasoning",
@@ -256,7 +260,7 @@ class OpenRouterClient {
         // pass is billed separately from the transcription it follows, so the
         // figure has to come back with the text or it cannot be attributed.
         payload.put("usage", JSONObject().put("include", true))
-        val connection = (URL("https://openrouter.ai/api/v1/chat/completions")
+        val connection = (URL(CHAT_COMPLETIONS_URL)
             .openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
@@ -265,13 +269,15 @@ class OpenRouterClient {
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("X-OpenRouter-Title", "Transcription base cleanup")
+            setRequestProperty("X-OpenRouter-Title", title)
         }
-        processConnection = connection
+        assign(connection)
+        var completed = false
         try {
             connection.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { it.write(payload.toString()) }
             val status = connection.responseCode
             val body = connection.readBody(status)
+            completed = true
             if (status !in 200..299) throw OpenRouterException(status, errorMessage(body))
             val json = JSONObject(body)
             json.opt("error")?.let { throw OpenRouterException(status, errorMessage(body)) }
@@ -281,7 +287,7 @@ class OpenRouterClient {
                 ?.optString("content")
                 .orEmpty()
                 .trim()
-            require(content.isNotBlank()) { "OpenRouter returned no processed text." }
+            require(content.isNotBlank()) { emptyMessage }
             val usage = json.optJSONObject("usage")
             return ProcessedText(
                 text = CleanupTextProtocol.sanitizeReplacement(content),
@@ -289,14 +295,11 @@ class OpenRouterClient {
                 totalTokens = usage?.optLong("total_tokens")?.takeIf { it > 0L }
             )
         } finally {
-            if (processConnection === connection) processConnection = null
-            connection.disconnect()
+            release(connection)
+            // A connection abandoned mid-exchange has an unread body and cannot
+            // be pooled, so that one is torn down rather than left to time out.
+            if (!completed) connection.disconnect()
         }
-    }
-
-    fun cancelProcess() {
-        processConnection?.disconnect()
-        processConnection = null
     }
 
     private fun tokenPriceNote(prompt: Double?, completion: Double?, audio: Double?): String =
@@ -374,6 +377,8 @@ class OpenRouterClient {
     private companion object {
         const val PERF_TAG = "TranscriptionPerf"
         const val NETWORK_BUFFER_BYTES = 256 * 1024
+        const val MODELS_URL = "https://openrouter.ai/api/v1/models"
+        const val CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
     }
 }
 
@@ -382,29 +387,9 @@ data class OpenRouterTextCatalog(
     val text: List<TranscriptionModel>
 )
 
-/**
- * Per-request provider pinning for text cleanup.
- *
- * OpenRouter can serve open-weight DeepSeek models through several inference
- * companies. Cleanup is the deliberate exception: a DeepSeek model must run on
- * DeepSeek's own endpoint, even when another endpoint would be cheaper or more
- * available. Other model families retain OpenRouter's normal routing.
- */
-internal object CleanupProviderRouting {
-    private const val DEEPSEEK_PROVIDER = "deepseek"
-
-    fun onlyProvider(modelId: String): String? {
-        val wireId = ProviderModels.openRouterId(modelId).substringBefore(':')
-        return DEEPSEEK_PROVIDER.takeIf {
-            wireId.startsWith("$DEEPSEEK_PROVIDER/", ignoreCase = true)
-        }
-    }
-}
-
-private fun JSONObject.applyCleanupProviderRouting(modelId: String): JSONObject = apply {
-    CleanupProviderRouting.onlyProvider(modelId)?.let { provider ->
-        put("provider", JSONObject().put("only", JSONArray().put(provider)))
-    }
+/** Prefer the fastest available endpoint for the selected cleanup model. */
+private fun JSONObject.applyCleanupProviderRouting(): JSONObject = apply {
+    put("provider", JSONObject().put("sort", "latency").put("allow_fallbacks", true))
 }
 
 internal object CleanupTextProtocol {

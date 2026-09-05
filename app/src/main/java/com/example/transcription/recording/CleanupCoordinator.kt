@@ -58,7 +58,7 @@ object CleanupCoordinator {
     private var instructionFile: File? = null
     private var originalText = ""
     private var startedAt = 0L
-    private var generation = 0L
+    @Volatile private var generation = 0L
     private var resultCallback: ((String) -> Unit)? = null
     @Volatile private var activeEngine: BatchTranscriptionEngine? = null
 
@@ -89,8 +89,13 @@ object CleanupCoordinator {
         }
 
         AppContainer.initialize(context)
+        if (AppContainer.secrets.readApiKey().isBlank()) {
+            _state.value = CleanupState(ownerId, CleanupPhase.ERROR,
+                message = "Add an OpenRouter API key in Settings to use cleanup.")
+            return false
+        }
         val app = context.applicationContext
-        val file = File(app.cacheDir, "cleanup/instruction.m4a").apply {
+        val file = File(app.cacheDir, "cleanup/instruction-${java.util.UUID.randomUUID()}.m4a").apply {
             parentFile?.mkdirs()
             if (exists()) delete()
         }
@@ -199,7 +204,10 @@ object CleanupCoordinator {
                     batchModel(resolved.second, transcriptionModels, primary)
                 }
                 val engine = BatchTranscriptionEngine(context, TranscriptionProviderRegistry(AppContainer.secrets))
-                activeEngine = engine
+                synchronized(this) {
+                    check(requestGeneration == generation) { "Cleanup cancelled." }
+                    activeEngine = engine
+                }
                 val instruction = engine.transcribe(
                     file = file,
                     audioFormat = "m4a",
@@ -215,7 +223,9 @@ object CleanupCoordinator {
                     catalogModels = transcriptionModels,
                     applyBaseCleanup = false
                 ).text.trim()
-                activeEngine = null
+                synchronized(this) {
+                    if (activeEngine === engine) activeEngine = null
+                }
                 check(requestGeneration == generation) { "Cleanup cancelled." }
                 if (!CleanupInstructionPolicy.shouldRequestRewrite(
                         instruction,
@@ -224,9 +234,8 @@ object CleanupCoordinator {
                 ) {
                     handler.post {
                         if (requestGeneration == generation) {
-                            instructionFile?.delete()
-                            clearRequest()
-                            _state.value = CleanupState()
+                            fail(ownerId, if (instruction.isBlank()) "No edit instruction was recognized. Please try again."
+                                else "Instruction too short. Lower Minimum instruction words in Settings or use a longer instruction.")
                         }
                     }
                     return@cleanupThread

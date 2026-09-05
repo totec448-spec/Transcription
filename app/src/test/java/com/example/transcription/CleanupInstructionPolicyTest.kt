@@ -8,6 +8,14 @@ import org.junit.Test
 
 class CleanupInstructionPolicyTest {
     @Test
+    fun defaultAcceptsShortGermanEdits() {
+        listOf("Kürzer", "Mach das freundlicher", "Als Stichpunkte").forEach {
+            assertTrue(CleanupInstructionPolicy.shouldRequestRewrite(it,
+                com.example.transcription.data.AppSettings().cleanupMinimumInstructionWords))
+        }
+    }
+
+    @Test
     fun punctuationAndSilenceArtifactsDoNotCountAsWords() {
         assertEquals(0, CleanupInstructionPolicy.meaningfulWordCount(" . … !!! -- "))
         assertFalse(CleanupInstructionPolicy.shouldRequestRewrite("...", minimumWords = 8))
@@ -44,7 +52,8 @@ class CleanupInstructionPolicyTest {
     }
 
     @Test
-    fun zeroDisablesTheMinimumFilter() {
-        assertTrue(CleanupInstructionPolicy.shouldRequestRewrite(".", minimumWords = 0))
+    fun zeroStillRejectsSilenceArtifacts() {
+        assertFalse(CleanupInstructionPolicy.shouldRequestRewrite(".", minimumWords = 0))
+        assertTrue(CleanupInstructionPolicy.shouldRequestRewrite("Kürzer", minimumWords = 0))
     }
 }

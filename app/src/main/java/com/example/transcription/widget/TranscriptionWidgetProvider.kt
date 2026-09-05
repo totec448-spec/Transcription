@@ -41,25 +41,13 @@ class TranscriptionWidgetProvider : AppWidgetProvider() {
     }
 
     private fun update(context: Context, manager: AppWidgetManager, id: Int) {
-        val options = manager.getAppWidgetOptions(id)
-        val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
-        val minHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
-        val layout = when {
-            minWidth >= 250 && minHeight >= 130 -> R.layout.widget_large
-            minWidth >= 250 -> R.layout.widget_medium
-            else -> R.layout.widget_small
-        }
+        val layout = layoutFor(manager, id)
         val views = RemoteViews(context.packageName, layout)
         val state = RecordingController.state.value
         val activeImport = AppContainer.history.entries.value.firstOrNull { it.processing }
         val active = state.phase == RecordingPhase.RECORDING || state.phase == RecordingPhase.PAUSED
         val busy = state.phase == RecordingPhase.PROCESSING || activeImport != null
-        val systemDark = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
-        val dark = when (AppContainer.settings.settings.value.themeMode) {
-            ThemeMode.DARK -> true
-            ThemeMode.LIGHT -> false
-            ThemeMode.SYSTEM -> systemDark
-        }
+        val dark = isDark(context)
         val foreground = if (dark) Color.rgb(248, 246, 239) else Color.rgb(17, 17, 15)
         val controlBackground = if (dark) R.drawable.widget_control_touch_dark else R.drawable.widget_primary_touch
         val controlForeground = if (dark) Color.rgb(248, 246, 239) else Color.WHITE
@@ -272,6 +260,35 @@ class TranscriptionWidgetProvider : AppWidgetProvider() {
     companion object {
         const val ACTION_REFRESH = "com.example.transcription.WIDGET_REFRESH"
 
+        /**
+         * Which layout a widget of this cell size gets. Shared with
+         * [updateWaveforms], which redraws the same widgets several times a
+         * second and has to pick exactly the same layout the full update did —
+         * a second copy of these thresholds could disagree and swap the layout
+         * under a running recording.
+         */
+        private fun layoutFor(manager: AppWidgetManager, id: Int): Int {
+            val options = manager.getAppWidgetOptions(id)
+            val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+            val minHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
+            return when {
+                minWidth >= 250 && minHeight >= 130 -> R.layout.widget_large
+                minWidth >= 250 -> R.layout.widget_medium
+                else -> R.layout.widget_small
+            }
+        }
+
+        /** The theme the widget draws in: the app's setting, or the system's. */
+        private fun isDark(context: Context): Boolean {
+            val systemDark = context.resources.configuration.uiMode and
+                Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+            return when (AppContainer.settings.settings.value.themeMode) {
+                ThemeMode.DARK -> true
+                ThemeMode.LIGHT -> false
+                ThemeMode.SYSTEM -> systemDark
+            }
+        }
+
         fun updateAll(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
             val component = ComponentName(context, TranscriptionWidgetProvider::class.java)
@@ -288,28 +305,24 @@ class TranscriptionWidgetProvider : AppWidgetProvider() {
             val state = RecordingController.state.value
             val activeImport = AppContainer.history.entries.value.firstOrNull { it.processing }
             val active = state.phase == RecordingPhase.RECORDING || state.phase == RecordingPhase.PAUSED
-            val systemDark = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
-            val dark = when (AppContainer.settings.settings.value.themeMode) {
-                ThemeMode.DARK -> true
-                ThemeMode.LIGHT -> false
-                ThemeMode.SYSTEM -> systemDark
-            }
+            val dark = isDark(context)
+            val busy = state.phase == RecordingPhase.PROCESSING || activeImport != null
+            val label = provider.status(state, activeImport)
+            // Only the large layout draws a different waveform, so two widgets
+            // of the same size share one bitmap instead of rasterizing an
+            // identical several-hundred-kilobyte canvas twice per tick.
+            val waveforms = HashMap<Boolean, Bitmap>(2)
             ids.forEach { id ->
-                val options = manager.getAppWidgetOptions(id)
-                val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
-                val minHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
-                val layout = when {
-                    minWidth >= 250 && minHeight >= 130 -> R.layout.widget_large
-                    minWidth >= 250 -> R.layout.widget_medium
-                    else -> R.layout.widget_small
-                }
+                val layout = layoutFor(manager, id)
+                val large = layout == R.layout.widget_large
                 val views = RemoteViews(context.packageName, layout)
-                val busy = state.phase == RecordingPhase.PROCESSING || activeImport != null
                 views.setImageViewBitmap(
                     R.id.widget_waveform,
-                    provider.renderWaveform(context, state.waveform, active || busy, layout == R.layout.widget_large, dark)
+                    waveforms.getOrPut(large) {
+                        provider.renderWaveform(context, state.waveform, active || busy, large, dark)
+                    }
                 )
-                views.setTextViewText(R.id.widget_status, provider.status(state, activeImport))
+                views.setTextViewText(R.id.widget_status, label)
                 manager.partiallyUpdateAppWidget(id, views)
             }
         }

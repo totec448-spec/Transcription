@@ -205,10 +205,9 @@ class BatchTranscriptionEngine(
                             fallbackError
                         )
                     }
-                }.let { it }
+                }
                 if (abandoned.get()) throw TranscriptionAbandonedException()
-                val response = outcome.second
-                val usedModel = outcome.first
+                val (usedModel, response) = outcome
                 texts += response.text
                 usedModels += usedModel
                 val resolvedCost = response.costUsd ?: estimateCost(
@@ -481,21 +480,42 @@ internal object AudioChunkPlan {
     }
 }
 
+/**
+ * Stitches the parts back together, dropping the words a part repeats from the
+ * end of the one before it.
+ *
+ * The overlap search is the same comparison at 24 widths, then 23, and so on,
+ * so the words it compares are normalized once into [tail] and [head] instead
+ * of inside the candidate loop, where the longest match re-lowercased and
+ * re-trimmed the same words twenty-odd times over. Only the last
+ * [MAX_OVERLAP_WORDS] words of the accumulated result can overlap anything, so
+ * that is all that is kept — the previous version re-split the entire joined
+ * transcript for every further part.
+ */
 internal object TranscriptJoiner {
+    private val WHITESPACE = Regex("\\s+")
+    private const val MAX_OVERLAP_WORDS = 24
+
     fun join(parts: List<String>): String {
         var result = parts.firstOrNull().orEmpty().trim()
+        var tail = normalizedWords(result).takeLast(MAX_OVERLAP_WORDS)
         parts.drop(1).forEach { rawNext ->
             val next = rawNext.trim()
             if (next.isBlank()) return@forEach
-            val left = result.split(Regex("\\s+")).filter(String::isNotBlank)
-            val right = next.split(Regex("\\s+")).filter(String::isNotBlank)
-            val overlap = (minOf(24, left.size, right.size) downTo 2).firstOrNull { count ->
-                left.takeLast(count).map(::normalizedWord) == right.take(count).map(::normalizedWord)
+            val right = next.split(WHITESPACE).filter(String::isNotBlank)
+            val head = right.take(MAX_OVERLAP_WORDS).map(::normalizedWord)
+            val overlap = (minOf(MAX_OVERLAP_WORDS, tail.size, head.size) downTo 2).firstOrNull { count ->
+                tail.subList(tail.size - count, tail.size) == head.subList(0, count)
             } ?: 0
-            result = (result.trimEnd() + " " + right.drop(overlap).joinToString(" ")).trim()
+            val kept = right.drop(overlap)
+            result = (result.trimEnd() + " " + kept.joinToString(" ")).trim()
+            tail = (tail + kept.map(::normalizedWord)).takeLast(MAX_OVERLAP_WORDS)
         }
         return result
     }
+
+    private fun normalizedWords(value: String) =
+        value.split(WHITESPACE).filter(String::isNotBlank).map(::normalizedWord)
 
     private fun normalizedWord(value: String) = value.lowercase().trim { !it.isLetterOrDigit() }
 }
@@ -510,30 +530,49 @@ private class PreparedChunks(val chunks: List<AudioChunk>, private val cleanup: 
 }
 
 private class AudioChunker(private val context: Context) {
+    /**
+     * Reading a probe means opening the container and parsing its track table,
+     * and every part used to pay for its own — of the same unchanged file, from
+     * inside the loop that was already splitting it. A six-minute recording
+     * parsed its own header three times before it sent anything. One read up
+     * front answers the same question for every part.
+     */
     fun prepare(source: File, wireFormat: String, suppliedDurationMs: Long): PreparedChunks {
-        val durationMs = suppliedDurationMs.takeIf { it > 0L } ?: (AudioProbe.read(source).durationUs / 1_000L)
+        val sourceProbe = lazy { AudioProbe.read(source) }
+        val durationMs = suppliedDurationMs.takeIf { it > 0L } ?: (sourceProbe.value.durationUs / 1_000L)
         val ranges = AudioChunkPlan.ranges(durationMs)
         if (ranges.size == 1) return PreparedChunks(listOf(AudioChunk(source, wireFormat)), null)
 
         val directory = File(context.cacheDir, "transcription_chunks/${UUID.randomUUID()}").apply { mkdirs() }
         return try {
+            // The transcoded copy the fallback branch works from, and the probe
+            // of it, are likewise made once and shared by every part.
+            val normalized = lazy {
+                File(directory, "normalized.m4a").also { target ->
+                    NativeM4aTranscoder.transcode(source, target, sourceProbe.value)
+                }
+            }
+            val normalizedProbe = lazy { AudioProbe.read(normalized.value) }
             val chunks = ranges.mapIndexed { index, range ->
                 val extension = wireFormat.lowercase()
                 val target = File(directory, "part-${index + 1}.$extension")
                 when (extension) {
-                    "m4a" -> remux(source, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                    "m4a" -> remux(source, sourceProbe.value, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                     "ogg" -> {
                         check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "Long OGG files require Android 10 or newer." }
-                        remux(source, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG)
+                        remux(source, sourceProbe.value, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG)
                     }
-                    "webm" -> remux(source, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
-                    "mp3" -> extractFrames(source, target, range)
+                    "webm" -> remux(source, sourceProbe.value, target, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
+                    "mp3" -> extractFrames(source, sourceProbe.value, target, range)
                     else -> {
-                        val probe = AudioProbe.read(source)
-                        val normalized = File(directory, "normalized.m4a")
-                        if (!normalized.exists()) NativeM4aTranscoder.transcode(source, normalized, probe)
                         val normalizedTarget = File(directory, "part-${index + 1}.m4a")
-                        remux(normalized, normalizedTarget, range, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                        remux(
+                            normalized.value,
+                            normalizedProbe.value,
+                            normalizedTarget,
+                            range,
+                            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                        )
                         return@mapIndexed AudioChunk(normalizedTarget, "m4a")
                     }
                 }
@@ -547,13 +586,12 @@ private class AudioChunker(private val context: Context) {
         }
     }
 
-    private fun remux(source: File, target: File, range: ChunkRange, outputFormat: Int) {
+    private fun remux(source: File, probe: AudioProbe, target: File, range: ChunkRange, outputFormat: Int) {
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
         var started = false
         try {
             extractor.setDataSource(source.absolutePath)
-            val probe = AudioProbe.read(source)
             extractor.selectTrack(probe.trackIndex)
             extractor.seekTo(range.startMs * 1_000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             val activeMuxer = MediaMuxer(target.absolutePath, outputFormat)
@@ -585,11 +623,10 @@ private class AudioChunker(private val context: Context) {
         }
     }
 
-    private fun extractFrames(source: File, target: File, range: ChunkRange) {
+    private fun extractFrames(source: File, probe: AudioProbe, target: File, range: ChunkRange) {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(source.absolutePath)
-            val probe = AudioProbe.read(source)
             extractor.selectTrack(probe.trackIndex)
             extractor.seekTo(range.startMs * 1_000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             val buffer = ByteBuffer.allocateDirect(probe.trackFormat.intOrLocal(android.media.MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024).coerceAtLeast(64 * 1024))

@@ -267,15 +267,24 @@ private fun RecordScreen(onAction: (String) -> Unit, modifier: Modifier = Modifi
     val haptic = LocalHapticFeedback.current
     val model = models.firstOrNull { it.id == settings.selectedModel }
     var editableText by rememberSaveable { mutableStateOf(state.resultText.ifBlank { history.firstOrNull()?.text.orEmpty() }) }
-    LaunchedEffect(state.resultText) { if (state.resultText.isNotBlank() || state.phase == RecordingPhase.SUCCESS) editableText = state.resultText }
-    LaunchedEffect(editableText) {
-        delay(700)
+    var editorDirty by remember { mutableStateOf(false) }
+    val recordingBusy = state.phase in setOf(RecordingPhase.RECORDING, RecordingPhase.PAUSED, RecordingPhase.PROCESSING)
+    LaunchedEffect(state.resultText, state.phase) {
+        if (!recordingBusy && (state.resultText.isNotBlank() || state.phase == RecordingPhase.SUCCESS)) {
+            editableText = state.resultText
+            editorDirty = false
+        }
+    }
+    LaunchedEffect(editableText, editorDirty, recordingBusy, state.historyId) {
+        if (!editorDirty || recordingBusy) return@LaunchedEffect
+        delay(350)
         val id = state.historyId ?: history.firstOrNull()?.id
         if (id != null && history.firstOrNull { it.id == id }?.text != editableText) {
             AppContainer.history.updateText(id, editableText)
-            RecordingController.update { it.copy(resultText = editableText) }
             TranscriptionWidgetProvider.updateAll(context)
         }
+        RecordingController.updateEditedText(editableText, state.historyId)
+        editorDirty = false
     }
     val action: (String) -> Unit = {
         if (settings.haptics) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -288,9 +297,9 @@ private fun RecordScreen(onAction: (String) -> Unit, modifier: Modifier = Modifi
     ) {
         TranscriptEditor(
             text = editableText,
-            onText = { editableText = it },
+            onText = { editableText = it; editorDirty = true },
             onCopy = { copy(context, editableText) },
-            onCleanup = { editableText = it },
+            onCleanup = { editableText = it; editorDirty = true },
             editingEnabled = !(cleanup.ownerId == "home" && cleanup.busy),
             modelName = model?.name?.substringAfter(": ") ?: "OpenRouter",
             fallbackMessage = state.fallbackMessage,
@@ -330,7 +339,7 @@ private fun ThumbRecorder(state: RecordingState, action: (String) -> Unit) {
                         )
                     }
                     state.phase == RecordingPhase.PROCESSING -> Text(
-                        "Processing",
+                        state.statusLabel?.takeIf(String::isNotBlank) ?: "Transcribing…",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -575,7 +584,7 @@ private fun TranscriptEditor(
             Text(modelName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             fallbackMessage?.takeIf(String::isNotBlank)?.let { message ->
                 Text(
-                    text = "Fallback used · ${message.replace(Regex("""^Part \d+:\s*"""), "")}",
+                    text = "Fallback used · ${message.replace(PART_PREFIX, "")}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     maxLines = 3,
@@ -590,7 +599,12 @@ private fun TranscriptEditor(
                 enabled = editingEnabled,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
-                decorationBox = { field -> if (text.isBlank()) Text("Transcript", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f)) else field() }
+                decorationBox = { field ->
+                    Box {
+                        if (text.isBlank()) Text("Transcript", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .55f))
+                        field()
+                    }
+                }
             )
             Row(
                 Modifier.fillMaxWidth(),
@@ -732,15 +746,16 @@ private fun HistoryScreen(
     val visibleEntries = remember(entries, searchQuery) {
         NoteSearch.filter(entries, searchQuery)
     }
-    val archiveBytes by produceState<Long?>(initialValue = null, entries) {
-        val snapshot = entries
+    // Keyed on the audio files rather than on the notes. A running import
+    // republishes its note on every stage and every part, and each of those
+    // emissions used to re-stat every recording the user has ever kept to
+    // re-total bytes that only change when a file is added or deleted.
+    val archivePaths = remember(entries) { entries.mapNotNull(TranscriptionEntry::audioPath) }
+    val archiveBytes by produceState<Long?>(initialValue = null, archivePaths) {
+        val snapshot = archivePaths
         value = withContext(Dispatchers.IO) {
-            snapshot.sumOf { entry ->
-                entry.audioPath
-                    ?.let(::File)
-                    ?.takeIf(File::isFile)
-                    ?.length()
-                    ?: 0L
+            snapshot.sumOf { path ->
+                File(path).takeIf(File::isFile)?.length() ?: 0L
             }
         }
     }
@@ -1077,7 +1092,7 @@ private fun HistoryRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(entry.createdAt))}  ·  ${duration(entry.durationMs)}",
+                    "${entryTimestamp(entry.createdAt)}  ·  ${duration(entry.durationMs)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp)
@@ -1238,7 +1253,7 @@ private fun HistoryEditor(
             Text(
                 buildString {
                     entry.sourceName?.takeIf { it.isNotBlank() }?.let { append(it.take(34)); append("  ·  ") }
-                    append(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(entry.createdAt)))
+                    append(entryTimestamp(entry.createdAt))
                     append("  ·  ")
                     append(duration(entry.durationMs))
                 },
@@ -1771,7 +1786,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                             supportingText = {
                                 Text(
                                     "Shorter instructions are discarded before the edit-model call. " +
-                                        "Punctuation does not count; 0 disables the filter."
+                                        "Punctuation does not count; 0 allows any nonempty instruction."
                                 )
                             },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -2383,6 +2398,20 @@ private fun ModelPicker(
     val menuScrollState = rememberScrollState()
     val groups = remember(appModels, providerAvailability) {
         buildModelPickerGroups(appModels)
+            // Each group is ordered here rather than where it is drawn. The
+            // order depends on the catalog and on which keys are present, both
+            // of which are already this remember's keys, so sorting inside the
+            // open menu re-sorted several hundred models on every recomposition
+            // to arrive at the list it had a moment earlier.
+            .map { group ->
+                group.copy(
+                    models = group.models.sortedWith(
+                        compareByDescending<TranscriptionModel> {
+                            providerAvailability[it.provider] == true
+                        }.thenByDescending(TranscriptionModel::createdAt)
+                    )
+                )
+            }
             .sortedBy { group ->
                 if (group.models.any { providerAvailability[it.provider] == true }) 0 else 1
             }
@@ -2517,11 +2546,7 @@ private fun ModelPicker(
                     }
                 )
                 if (groupExpanded) {
-                    val sortedModels = group.models.sortedWith(
-                        compareByDescending<TranscriptionModel> {
-                            providerAvailability[it.provider] == true
-                        }.thenByDescending(TranscriptionModel::createdAt)
-                    )
+                    val sortedModels = group.models
                     val visibleCount = visibleModelCounts[group.id]
                         ?: BrowserRenderingPolicy.nextBatchEnd(0, sortedModels.size)
                     sortedModels.take(visibleCount).forEach { model ->
@@ -2823,6 +2848,31 @@ private fun copy(context: Context, text: String) {
     ClipboardFeedback.copy(context, text)
 }
 private fun duration(ms: Long): String { val seconds = ms / 1000; return "%02d:%02d".format(Locale.ROOT, seconds / 60, seconds % 60) }
+
+/** The `Part 3: ` a chunked run prefixes its fallback notice with. */
+private val PART_PREFIX = Regex("""^Part \d+:\s*""")
+
+private var timestampLocale: Locale? = null
+private var timestampFormat: DateFormat? = null
+
+/**
+ * When a note was recorded, in the user's locale.
+ *
+ * Building the formatter is the expensive part — it resolves a pattern and a
+ * full set of date symbols — and every note row used to build its own, on every
+ * recomposition, to format one long. It is kept between calls but re-created
+ * when the locale changes, so a language switch still reformats immediately
+ * rather than waiting for the process to restart.
+ */
+private fun entryTimestamp(createdAt: Long): String {
+    val locale = Locale.getDefault()
+    val format = timestampFormat?.takeIf { timestampLocale == locale }
+        ?: DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).also {
+            timestampLocale = locale
+            timestampFormat = it
+        }
+    return format.format(Date(createdAt))
+}
 /** Short form for the metadata line, where a leading "00:" is just noise. */
 private fun shortDuration(ms: Long): String {
     val seconds = ((ms + 500L) / 1000L).coerceAtLeast(1L)

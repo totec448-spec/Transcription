@@ -257,7 +257,7 @@ class TranscriptionProviderRegistry(
         // still noticed within half a second — while a longer wait settles
         // into roughly one request per second instead of three.
         var pollDelayMs = FIRST_POLL_DELAY_MS
-        while (result.optString("status") in setOf("queued", "processing")) {
+        while (result.optString("status") in UNFINISHED_STATUSES) {
             if (SystemClock.elapsedRealtime() >= deadline) throw IOException("AssemblyAI timed out.")
             Thread.sleep(pollDelayMs)
             pollDelayMs = (pollDelayMs * POLL_BACKOFF / 100).coerceAtMost(MAX_POLL_DELAY_MS)
@@ -410,6 +410,9 @@ class TranscriptionProviderRegistry(
         val OCTET_STREAM = "application/octet-stream".toMediaType()
         const val ELEVENLABS_PRICE_PER_HOUR = 0.22
         const val ASSEMBLYAI_PRICE_PER_HOUR = 0.21
+
+        /** Job states that mean "ask again", built once rather than per poll. */
+        val UNFINISHED_STATUSES = setOf("queued", "processing")
 
         /** Short enough that a quickly finished job is not made to wait for us. */
         const val FIRST_POLL_DELAY_MS = 350L

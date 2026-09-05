@@ -17,5 +17,5 @@ internal object CleanupInstructionPolicy {
         meaningfulWord.findAll(instruction).count()
 
     fun shouldRequestRewrite(instruction: String, minimumWords: Int): Boolean =
-        minimumWords <= 0 || meaningfulWordCount(instruction) >= minimumWords
+        meaningfulWordCount(instruction) >= minimumWords.coerceAtLeast(1)
 }

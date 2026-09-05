@@ -1,0 +1,45 @@
+name: Publish v1.02
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-1.02.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v1.02
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0f3d21f7c2635957539b82fe19e52b5efa9bb20a
+      - name: Publish verified source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'NOTES'
+          MAI-Transcribe 2 and pricing fixes are available in this source release.
+
+          **The signed Android update APK is not attached yet.** The existing release signing environment is required to produce an APK compatible with previous installations.
+
+          Unit tests and the debug APK build passed on GitHub for the released commit. Live device/provider verification remains pending.
+
+          NOTES
+          cat docs/RELEASE_1.02.md >> /tmp/release-notes.md
+          if gh release view v1.02 >/dev/null 2>&1; then
+            echo 'Release v1.02 already exists.'
+            exit 0
+          fi
+          gh release create v1.02 \
+            --target 0f3d21f7c2635957539b82fe19e52b5efa9bb20a \
+            --title 'Transcription 1.02: Fix MAI-Transcribe and prices' \
+            --notes-file /tmp/release-notes.md \
+            --latest \
+            THIRD_PARTY_NOTICES.md PRIVACY.md

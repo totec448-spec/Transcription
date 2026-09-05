@@ -31,7 +31,7 @@ class ModelCatalogRepository(
         val successfulAge = now - settingsStore.settings.value.modelCatalogUpdatedAt
         val attemptAge = now - lastAttemptAt
         if (!force && (
-                successfulAge in 0 until CATALOG_TTL_MS ||
+                (successfulAge in 0 until CATALOG_TTL_MS && _models.value.none { it.priceNote == "Refresh catalog for corrected pricing" }) ||
                     attemptAge in 0 until FAILED_REFRESH_BACKOFF_MS
                 )
         ) return
@@ -95,14 +95,15 @@ class ModelCatalogRepository(
             TranscriptionModel("assemblyai/live/universal-streaming-english", "AssemblyAI: Universal Streaming English", "Fast English realtime transcription.", 0.15, provider = TranscriptionProvider.ASSEMBLYAI, streaming = true),
             TranscriptionModel("assemblyai/live/universal-streaming-multilingual", "AssemblyAI: Universal Streaming Multilingual", "Fast multilingual realtime transcription.", 0.15, provider = TranscriptionProvider.ASSEMBLYAI, streaming = true),
             TranscriptionModel("assemblyai/live/whisper-rt", "AssemblyAI: Whisper live", "Broad-language realtime transcription.", 0.30, provider = TranscriptionProvider.ASSEMBLYAI, streaming = true),
+            TranscriptionModel(ProviderModels.OPENROUTER_MAI_2, "Microsoft: MAI-Transcribe 2", "Multilingual transcription. Automatic send format: MP3.", 0.10, provider = TranscriptionProvider.OPENROUTER_STT),
             TranscriptionModel(ProviderModels.OPENROUTER_MAI_1_5, "Microsoft: MAI-Transcribe 1.5", "Fast multilingual transcription. Automatic send format: MP3.", 0.36, provider = TranscriptionProvider.OPENROUTER_STT),
-            TranscriptionModel(ProviderModels.OPENROUTER_WHISPER_LARGE_V3, "OpenAI: Whisper Large V3", "Reliable multilingual fallback transcription.", 0.09, provider = TranscriptionProvider.OPENROUTER_STT),
+            TranscriptionModel(ProviderModels.OPENROUTER_WHISPER_LARGE_V3, "OpenAI: Whisper Large V3", "Reliable multilingual fallback transcription.", 0.027, provider = TranscriptionProvider.OPENROUTER_STT),
             TranscriptionModel("openai/gpt-4o-mini-transcribe", "OpenAI: GPT-4o Mini Transcribe", "Fast, accurate and cost-efficient.", 0.18, "Estimated from token pricing"),
             TranscriptionModel("openai/gpt-4o-transcribe", "OpenAI: GPT-4o Transcribe", "High-quality multilingual transcription.", 0.36, "Estimated from token pricing"),
             TranscriptionModel(ProviderModels.OPENROUTER_GPT_TRANSCRIBE, "OpenAI: GPT Transcribe", "High-accuracy speech-to-text for recorded audio.", 0.27, provider = TranscriptionProvider.OPENROUTER_STT),
             TranscriptionModel("mistralai/voxtral-mini-transcribe", "Mistral: Voxtral Mini Transcribe", "Fast transcription for voice notes and meetings.", 0.18),
             TranscriptionModel("openai/whisper-1", "OpenAI: Whisper 1", "Legacy multilingual Whisper endpoint.", 0.36),
-            TranscriptionModel("openai/whisper-large-v3-turbo", "OpenAI: Whisper Large V3 Turbo", "Very fast open-source Whisper variant.", 0.04)
+            TranscriptionModel("openai/whisper-large-v3-turbo", "OpenAI: Whisper Large V3 Turbo", "Very fast open-source Whisper variant.", 0.011988)
         )
         private val fixedProviderModels = fallbackModels.filter {
             it.provider == TranscriptionProvider.ELEVENLABS || it.provider == TranscriptionProvider.ASSEMBLYAI

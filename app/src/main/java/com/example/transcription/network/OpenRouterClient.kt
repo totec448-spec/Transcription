@@ -55,7 +55,8 @@ class OpenRouterClient {
                         id = id,
                         name = item.optString("name", id),
                         description = item.optString("description"),
-                        pricePerHourUsd = PriceNormalizer.pricePerHour(id, promptPrice),
+                        pricePerHourUsd = if (id in PriceNormalizer.mixedUnitIds) fetchProviderHourlyPrice(id)
+                            else PriceNormalizer.pricePerHour(id, promptPrice),
                         priceNote = PriceNormalizer.note(id),
                         createdAt = item.optLong("created"),
                         provider = TranscriptionProvider.OPENROUTER_STT,
@@ -65,6 +66,26 @@ class OpenRouterClient {
             }
         }
     }
+
+    private fun fetchProviderHourlyPrice(modelId: String): Double? = runCatching {
+        val connection = URL("$MODELS_URL/$modelId/endpoints").openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
+            val status = connection.responseCode
+            val body = connection.readBody(status)
+            check(status in 200..299)
+            val endpoints = JSONObject(body).getJSONObject("data").getJSONArray("endpoints")
+            (0 until endpoints.length()).mapNotNull { index ->
+                val endpoint = endpoints.getJSONObject(index)
+                val price = endpoint.optJSONObject("pricing")?.optString("prompt")?.toDoubleOrNull()
+                    ?: return@mapNotNull null
+                PriceNormalizer.pricePerHour(modelId, price, endpoint.optString("provider_name"))
+            }.minOrNull()
+        } finally {
+            connection.disconnect()
+        }
+    }.getOrNull()
 
     fun fetchTextCatalog(apiKey: String = ""): OpenRouterTextCatalog {
         val array = fetchCatalog("text", apiKey)

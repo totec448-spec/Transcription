@@ -23,6 +23,7 @@ import java.io.FilterOutputStream
 import java.io.OutputStream
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 data class ProviderTranscriptionRequest(
@@ -70,6 +71,7 @@ class TranscriptionProviderRegistry(
     private val baseClient: OkHttpClient = OkHttpClient()
 ) {
     private val activeCall = AtomicReference<Call?>()
+    private val cancellationGeneration = AtomicLong()
 
     /**
      * Set by the caller that wants to narrate the wait. Invoked on the calling
@@ -97,10 +99,12 @@ class TranscriptionProviderRegistry(
     }
 
     fun cancelActive() {
+        cancellationGeneration.incrementAndGet()
         activeCall.getAndSet(null)?.cancel()
     }
 
     private fun openRouterStt(apiKey: String, value: ProviderTranscriptionRequest): ProviderTranscriptionResult {
+        val generation = cancellationGeneration.get()
         val model = ProviderModels.openRouterId(value.modelId)
         val requestBody = object : RequestBody() {
             override fun contentType() = JSON
@@ -111,17 +115,20 @@ class TranscriptionProviderRegistry(
                 TranscriptionRequestWriter.write(sink.outputStream(), model, value.audioFile, value.language, value.audioFormat)
             }
         }
-        val response = execute(
+        val response = TranscriptionRetry.run(
+            timeoutMs = value.timeoutSeconds * 1000L,
+            cancelled = { cancellationGeneration.get() != generation }
+        ) { remainingSeconds -> execute(
             Request.Builder()
                 .url("https://openrouter.ai/api/v1/audio/transcriptions")
                 .header("Authorization", "Bearer $apiKey")
                 .header("X-OpenRouter-Title", "Transcription for Android")
                 .post(requestBody)
                 .build(),
-            value.timeoutSeconds,
+            remainingSeconds,
             carriesAudio = true,
             returnsTranscript = true
-        )
+        ) }
         val parsed = TranscriptionResponseParser.parse(response.body, response.status)
         return ProviderTranscriptionResult(
             text = parsed.text,
@@ -305,7 +312,9 @@ class TranscriptionProviderRegistry(
             call.execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 Log.i("TranscriptionPerf", "provider_host=${request.url.host} total_ms=${SystemClock.elapsedRealtime() - started} status=${response.code}")
-                if (!response.isSuccessful) throw IOException(providerError(body, response.code))
+                if (!response.isSuccessful) throw ProviderHttpException(
+                    response.code, response.header("Retry-After"), providerError(body, response.code)
+                )
                 return HttpResult(response.code, body)
             }
         } finally {
@@ -363,7 +372,16 @@ class TranscriptionProviderRegistry(
             is String -> error
             else -> json.optString("detail").ifBlank { json.optString("message") }
         }
-        "HTTP $status: ${message.ifBlank { body.take(500) }}"
+        val provider = (error as? JSONObject)?.optJSONObject("metadata")
+            ?.optString("provider_name")?.takeIf { it.isNotBlank() }
+        val reason = when (status) {
+            429 -> "Rate limited or provider capacity exhausted"
+            402 -> "Insufficient API credits"
+            503 -> "Provider temporarily unavailable"
+            else -> null
+        }
+        listOfNotNull("HTTP $status", provider, reason, message.ifBlank { body.take(500) })
+            .joinToString(": ")
     }.getOrDefault("HTTP $status: ${body.take(500)}")
 
     private fun openRouterError(json: JSONObject, status: Int) {

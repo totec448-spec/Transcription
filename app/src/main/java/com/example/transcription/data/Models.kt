@@ -353,6 +353,7 @@ object ProviderModels {
     const val ASSEMBLYAI_UNIVERSAL_3_5_PRO_STREAMING = "assemblyai/universal-3-5-pro-realtime"
     const val OPENROUTER_WHISPER_LARGE_V3 = "openai/whisper-large-v3"
     const val OPENROUTER_GPT_TRANSCRIBE = "openai/gpt-transcribe"
+    const val OPENROUTER_MAI_2 = "microsoft/mai-transcribe-2"
     const val OPENROUTER_MAI_1_5 = "microsoft/mai-transcribe-1.5"
     const val OPENROUTER_WHISPER_V3_TURBO = "openai/whisper-large-v3-turbo"
     const val OPENROUTER_DEEPSEEK_V4_PRO = "openrouter-text/deepseek/deepseek-v4-pro"
@@ -391,8 +392,9 @@ object ProviderModels {
             modelId.startsWith("assemblyai/live/") ||
             (modelId.startsWith("elevenlabs/") && elevenLabsId(modelId).contains("realtime"))
 
-    fun automaticWireFormat(modelId: String) =
-        if (openRouterId(modelId) == OPENROUTER_MAI_1_5) "mp3" else "m4a"
+    fun prefersMp3(modelId: String) = openRouterId(modelId) in setOf(OPENROUTER_MAI_1_5, OPENROUTER_MAI_2)
+
+    fun automaticWireFormat(modelId: String) = if (prefersMp3(modelId)) "mp3" else "m4a"
 }
 
 object AudioCaptureOptions {

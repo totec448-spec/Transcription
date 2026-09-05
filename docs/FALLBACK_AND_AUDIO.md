@@ -4,8 +4,8 @@
 
 The primary and fallback model are stored independently in `SettingsStore`. The UI keeps them distinct when the primary selection changes. For every completed recording, `RecordingService` performs this exact sequence:
 
-1. Prepare one transient send view for the current primary model. Automatic mode uses the archived M4A directly except for MAI-Transcribe 1.5, which receives a temporary MP3.
-2. If the primary throws for any HTTP, provider, parsing, timeout, or connection error, prepare the fallback model's send view from the same unchanged archive and call it once.
+1. Prepare one transient send view for the current primary model. Automatic mode uses the archived M4A directly except for MAI-Transcribe 1.5 and 2, which receives a temporary MP3.
+2. OpenRouter STT retries explicit HTTP 429/503 failures at most twice within the request timeout. Short Retry-After values are honored; cooldowns longer than five seconds go directly to fallback. Cancellation interrupts the wait. Connection failures are not retried automatically. If the primary throws for any HTTP, provider, parsing, timeout, or connection error, prepare the fallback model's send view from the same unchanged archive and call it once.
 3. Persist the transcript and the model ID that actually succeeded.
 4. If both fail, retain the audio and expose one condensed error naming both failed models. With **Save failed recordings** enabled, copy the completed M4A into the permanent audio archive and create a failed Notes entry.
 
@@ -39,7 +39,7 @@ The default is **Highest · compressed**: 48 kHz, 192 kbps AAC, mono. Balanced (
 
 ### Upload and import formats
 
-M4A remains the permanent source for microphone recordings. Android records high-quality AAC directly and the file stays compact. Automatic mode streams those exact bytes for normal providers; MAI-Transcribe 1.5 receives a temporary MP3 because its OpenRouter route rejected the recorded M4A. Manual M4A and MP3 overrides remain available. Temporary send copies are deleted after final success/failure unless debug retention is enabled.
+M4A remains the permanent source for microphone recordings. Android records high-quality AAC directly and the file stays compact. Automatic mode streams those exact bytes for normal providers; MAI-Transcribe 1.5 and 2 receives a temporary MP3 because its OpenRouter route rejected the recorded M4A. Manual M4A and MP3 overrides remain available. Temporary send copies are deleted after final success/failure unless debug retention is enabled.
 
 Imported MP3, M4A, OGG/Opus, AAC, and WebM are likewise archived and streamed byte-for-byte with the matching `input_audio.format`. This includes WhatsApp's observed `audio/ogg; codecs=opus` share intent. The app performs no speculative format retry and never converts one of these already compact sources. If a different or uncompressed Android-decodable source is chosen, a bounded native `MediaExtractor`/`MediaCodec`/`MediaMuxer` pipeline produces AAC/M4A without an uncompressed intermediate file. The result is stored once and used by primary, fallback, playback, export, and future re-transcription.
 

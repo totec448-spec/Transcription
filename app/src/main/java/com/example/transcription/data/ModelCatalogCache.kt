@@ -25,7 +25,11 @@ class ModelCatalogCache(context: Context) {
     fun read(): CachedModelCatalog = runCatching {
         val root = JSONObject(String(file.readFully(), Charsets.UTF_8))
         CachedModelCatalog(
-            transcription = root.optJSONArray("transcription").models(),
+            transcription = root.optJSONArray("transcription").models().map { model ->
+                if (root.optInt("version", 1) < 2 && model.provider == TranscriptionProvider.OPENROUTER_STT) {
+                    model.copy(pricePerHourUsd = null, priceNote = "Refresh catalog for corrected pricing")
+                } else model
+            },
             cleanup = root.optJSONArray("cleanup").models()
         )
     }.getOrDefault(CachedModelCatalog())
@@ -33,7 +37,7 @@ class ModelCatalogCache(context: Context) {
     @Synchronized
     fun write(value: CachedModelCatalog) {
         val data = JSONObject()
-            .put("version", 1)
+            .put("version", 2)
             .put("transcription", value.transcription.toJson())
             .put("cleanup", value.cleanup.toJson())
             .toString()

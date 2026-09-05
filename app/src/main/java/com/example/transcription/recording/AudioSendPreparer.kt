@@ -100,7 +100,7 @@ class AudioSendPreparer(private val context: Context) {
          * pass, which re-encodes anyway and therefore has to land on the same
          * answer or the file would be converted twice.
          *
-         * MAI 1.5 is the reason this is not simply "keep what we have": it
+         * MAI 1.5 and 2 are the reason this is not simply "keep what we have": it
          * rejects everything but MP3, so that model overrides the source format
          * rather than following it.
          */
@@ -108,7 +108,7 @@ class AudioSendPreparer(private val context: Context) {
             val normalizedSource = sourceFormat.lowercase()
             return when (preference) {
                 SendAudioFormat.AUTO -> when {
-                    ProviderModels.openRouterId(modelId) == ProviderModels.OPENROUTER_MAI_1_5 -> "mp3"
+                    ProviderModels.prefersMp3(modelId) -> "mp3"
                     normalizedSource in setOf("m4a", "mp3") -> normalizedSource
                     else -> ProviderModels.automaticWireFormat(modelId)
                 }

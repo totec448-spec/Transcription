@@ -422,7 +422,7 @@ private fun estimateCost(
         completionTokens: Long?
     ): Double? {
         model ?: return null
-        if (promptTokens != null || completionTokens != null) {
+        if (model.inputPricePerMillionUsd != null && (promptTokens != null || completionTokens != null)) {
             val input = promptTokens?.times(model.inputPricePerMillionUsd ?: return null)?.div(1_000_000.0) ?: 0.0
             val output = completionTokens?.times(model.outputPricePerMillionUsd ?: 0.0)?.div(1_000_000.0) ?: 0.0
             return input + output

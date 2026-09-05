@@ -62,4 +62,11 @@ class AudioSendFormatTest {
             AudioSendPreparer.wireFormat(ProviderModels.ELEVENLABS_SCRIBE_V2, "m4a", SendAudioFormat.MP3)
         )
     }
+    @Test fun automaticFallbackToMai2RepreparesM4aAsMp3() {
+        val source = "m4a"
+        assertEquals("m4a", AudioSendPreparer.wireFormat(ProviderModels.OPENROUTER_WHISPER_LARGE_V3, source, SendAudioFormat.AUTO))
+        assertEquals("mp3", AudioSendPreparer.wireFormat(ProviderModels.OPENROUTER_MAI_2, source, SendAudioFormat.AUTO))
+        assertEquals("mp3", ProviderModels.automaticWireFormat(ProviderModels.OPENROUTER_MAI_2))
+        assertEquals("mp3", AudioSendPreparer.wireFormat("openrouter-multimodal/${ProviderModels.OPENROUTER_MAI_2}", "ogg", SendAudioFormat.AUTO))
+    }
 }

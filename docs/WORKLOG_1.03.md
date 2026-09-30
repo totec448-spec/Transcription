@@ -39,3 +39,12 @@ Final local validation:
 - Release signing material, build logs and private recordings are excluded from the commit/release. Only the signed APK, checksum, verification record and existing privacy/license notices are publication assets.
 
 The release verification attachment records the source commit and GitHub CI result. Publication is gated on that source revision passing CI and asset digests matching the local signed APK. Device installation/runtime and live provider performance remain unverified.
+
+Publication receipt (2026-09-30):
+
+- Released source and lightweight tag `v1.03`: `ed6c94b80122d60feb3bfd1e58ab9ed9e385c794`. The GitHub tag API confirmed this exact commit.
+- [GitHub CI run 36738128966](https://github.com/totec448-spec/Transcription/actions/runs/36738128966) succeeded for that source, including tests, APK assembly and artifact upload.
+- [Public release v1.03](https://github.com/totec448-spec/Transcription/releases/tag/v1.03) published at `2026-09-30T15:43:25Z`, with `isDraft=false` confirmed by GitHub CLI.
+- All five uploaded asset SHA-256 digests matched local files before publication: APK, checksums, verification record, privacy notice and third-party notices. The public release reports the same digests.
+- Independently downloaded the published 1.02 APK, matched its published digest, and verified that its signing certificate equals 1.03's certificate, confirming update compatibility.
+- This publication receipt is a documentation-only follow-up; the release tag, APK and verified source revision remain unchanged.

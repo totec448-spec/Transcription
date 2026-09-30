@@ -84,6 +84,7 @@ import kotlin.math.roundToInt
  * vendor skins while retaining the small, familiar Gboard-sized footprint.
  */
 class VoiceInputMethodService : InputMethodService() {
+    private var liveCleanup: com.example.transcription.recording.AutomaticCleanupTask? = null
     private val handler = Handler(Looper.getMainLooper())
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -1172,7 +1173,15 @@ class VoiceInputMethodService : InputMethodService() {
         when (uiMode) {
             UiMode.IDLE -> startSelectedModel()
             UiMode.RECORDING, UiMode.PAUSED -> finishRecording()
-            UiMode.PROCESSING, UiMode.CLEANUP_RECORDING, UiMode.CLEANUP_PROCESSING -> Unit
+            UiMode.PROCESSING -> {
+                if (liveCleanup != null) liveCleanup?.skip()
+                else if (RecordingController.state.value.cleanupInProgress) {
+                    batchRequestId?.takeIf { it == RecordingController.state.value.requestId }?.let {
+                        sendRecordingAction(RecordingService.ACTION_SKIP_CLEANUP, it)
+                    }
+                }
+            }
+            UiMode.CLEANUP_RECORDING, UiMode.CLEANUP_PROCESSING -> Unit
         }
     }
 
@@ -1196,7 +1205,8 @@ class VoiceInputMethodService : InputMethodService() {
             return
         }
         val started = CleanupCoordinator.start(this, CLEANUP_OWNER, original) { replacement ->
-            recordedEdit { replaceEntireField(replacement) }
+            if (currentFieldText() == original) recordedEdit { replaceEntireField(replacement) }
+            else Toast.makeText(this, "Text changed while editing; replacement was not applied.", Toast.LENGTH_LONG).show()
         }
         if (!started) {
             Toast.makeText(
@@ -1607,15 +1617,23 @@ class VoiceInputMethodService : InputMethodService() {
                 } else {
                     // Live text is already in the field, so the cleanup runs
                     // after the fact and swaps exactly the range we inserted.
-                    showProcessing("Cleaning up · ${mode.label}…")
                     val settings = AppContainer.settings.settings.value
                     val cleanupModels = AppContainer.models.cleanupModels.value
+                    val task = BaseTextProcessor.task(text, settings, cleanupModels)
+                    liveCleanup = task
+                    RecordingController.update { it.copy(cleanupInProgress = true, statusLabel = "Cleaning up · ${mode.label} · tap to skip") }
+                    showProcessing("Cleaning up · ${mode.label} · tap to skip", canSkipCleanup = true)
+                    task.start()
                     Thread {
-                        val cleaned = BaseTextProcessor.process(text, settings, cleanupModels)
+                        val cleaned = task.await()
                         handler.post {
                             if (streaming !== activeStreaming) return@post
-                            val applied = if (cleaned != text) replaceLiveTranscript(text, cleaned) else false
-                            completeLiveSession(activeStreaming, if (applied) cleaned else text)
+                            liveCleanup = null
+                            val applied = if (cleaned.text != text) replaceLiveTranscript(text, cleaned.text) else false
+                            val warning = cleaned.warning ?: if (cleaned.text != text && !applied)
+                                "Cleanup completed, but the text or cursor changed; raw transcript kept." else null
+                            completeLiveSession(activeStreaming, if (applied) cleaned.text else text, warning, cleaned.costUsd)
+                            warning?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
                         }
                     }.start()
                 }
@@ -1647,11 +1665,13 @@ class VoiceInputMethodService : InputMethodService() {
         handler.postDelayed(finalize, minOf(LIVE_FINALIZE_SETTLE_MS, remaining))
     }
 
-    private fun completeLiveSession(session: StreamingVoiceSession, text: String) {
-        val historyId = saveLiveHistory(session, text)
+    private fun completeLiveSession(session: StreamingVoiceSession, text: String, warning: String? = null, cleanupCost: Double? = null) {
+        val historyId = saveLiveHistory(session, text, warning, cleanupCost)
         RecordingController.update { state ->
             state.copy(
                 phase = RecordingPhase.SUCCESS,
+                cleanupInProgress = false,
+                fallbackMessage = warning,
                 amplitude = 0f,
                 resultText = text,
                 statusLabel = null,
@@ -1694,6 +1714,8 @@ class VoiceInputMethodService : InputMethodService() {
     }
 
     private fun abandon() {
+        liveCleanup?.skip()
+        liveCleanup = null
         if (CleanupCoordinator.isOwnerActive(CLEANUP_OWNER)) {
             CleanupCoordinator.cancel(CLEANUP_OWNER)
             showIdle()
@@ -1738,7 +1760,7 @@ class VoiceInputMethodService : InputMethodService() {
             .joinToString(" ")
             .trim()
 
-    private fun saveLiveHistory(session: StreamingVoiceSession, text: String): String? {
+    private fun saveLiveHistory(session: StreamingVoiceSession, text: String, warning: String?, cleanupCost: Double?): String? {
         if (streamingHistorySaved) return null
         val sourceAudio = session.archivedAudio()
         if (text.isBlank() && sourceAudio == null) return null
@@ -1760,6 +1782,8 @@ class VoiceInputMethodService : InputMethodService() {
                 createdAt = System.currentTimeMillis(),
                 durationMs = (SystemClock.elapsedRealtime() - streamingStartedAt).coerceAtLeast(0L),
                 modelId = streamingModelId,
+                fallbackMessage = warning,
+                cleanupCostUsd = cleanupCost,
                 audioPath = archivedAudio?.absolutePath,
                 audioFormat = "wav",
                 inputBytes = archivedAudio?.length() ?: 0L
@@ -1788,13 +1812,14 @@ class VoiceInputMethodService : InputMethodService() {
                 pause.contentDescription = "Resume recording"
             }
             RecordingPhase.PROCESSING ->
-                showProcessing(state.statusLabel?.takeIf { it.isNotBlank() }?.plus("…") ?: "Transcribing…")
+                showProcessing(state.statusLabel?.takeIf { it.isNotBlank() }?.plus("…") ?: "Transcribing…", state.cleanupInProgress)
             RecordingPhase.SUCCESS -> {
                 if (state.resultText.isNotBlank()) {
                     recordedEdit { currentInputConnection?.commitText(state.resultText, 1) }
                 }
                 batchRequestId = null
                 showIdle()
+                state.fallbackMessage?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
             }
             RecordingPhase.ERROR -> {
                 batchRequestId = null
@@ -1844,12 +1869,13 @@ class VoiceInputMethodService : InputMethodService() {
         pause.text = "Ⅱ"
     }
 
-    private fun showProcessing(message: String) {
+    private fun showProcessing(message: String, canSkipCleanup: Boolean = false) {
         closeOverlay()
         uiMode = UiMode.PROCESSING
         mic.level = 0f
         mic.active = false
-        mic.isEnabled = false
+        mic.isEnabled = canSkipCleanup
+        mic.contentDescription = if (canSkipCleanup) "Skip cleanup and use raw transcript" else "Transcribing"
         modelControl.isEnabled = false
         modelControl.alpha = .62f
         historyButton.isEnabled = false

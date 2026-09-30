@@ -9,10 +9,12 @@ object ModelLanguageCatalog {
         "en zh de es ru ko fr ja pt tr pl ca nl ar sv it id hi fi vi he uk el ms cs ro da hu ta no th ur hr bg lt la mi ml cy sk te fa lv bn sr az sl kn et mk br eu is hy ne mn bs kk sq sw gl mr pa si km sn yo so af oc ka be tg sd gu am yi lo uz fo ht ps tk nn mt sa lb my bo tl mg as tt jv su"
     )
     private val euOfficial = codes("bg hr cs da nl en et fi fr de el hu ga it lv lt mt pl pt ro sk sl es sv")
+    private val assembly36 = codes("af ar yue ca da nl en et fi fr gl de he hi it ja ko zh mr no nn fa pt ro ru es sv tr ur vi xh zu")
 
     fun supportedCodes(modelId: String): Set<String>? {
         val id = modelId.lowercase()
         return when {
+            "universal-3-6-pro" in id -> assembly36
             "qwen3-asr-flash" in id -> qwen3AsrFlash
             "parakeet-tdt-0.6b-v3" in id -> parakeetV3
             "voxtral" in id && "transcribe" in id -> voxtral

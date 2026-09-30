@@ -18,7 +18,7 @@ import java.nio.ByteBuffer
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class BatchProgress(val label: String, val completed: Int, val total: Int)
+data class BatchProgress(val label: String, val completed: Int, val total: Int, val cleanupInProgress: Boolean = false)
 
 data class BatchTranscription(
     val text: String,
@@ -53,6 +53,9 @@ class BatchTranscriptionEngine(
 ) {
     private val fallbackRequested = AtomicBoolean(false)
     private val abandoned = AtomicBoolean(false)
+    @Volatile private var activeCleanup: AutomaticCleanupTask? = null
+
+    fun skipCleanup() = activeCleanup?.skip() == true
 
     fun useFallback() {
         fallbackRequested.set(true)
@@ -61,6 +64,7 @@ class BatchTranscriptionEngine(
 
     fun abandon(cancelNetwork: Boolean) {
         abandoned.set(true)
+        activeCleanup?.skip()
         if (cancelNetwork) providers.cancelActive()
     }
 
@@ -245,16 +249,18 @@ class BatchTranscriptionEngine(
                 // The effective mode, not the stored one: without an OpenRouter
                 // key the pass below skips, and announcing it would be a lie.
                 val cleanupMode = BaseTextProcessor.effectiveMode(settings)
-                if (cleanupMode != com.example.transcription.data.BaseCleanupMode.OFF) {
-                    publish("Cleaning up · ${cleanupMode.label}", partCount, partCount)
+                if (cleanupMode == com.example.transcription.data.BaseCleanupMode.OFF || joined.isBlank()) {
+                    CleanedText(joined, null)
+                } else {
+                    val task = BaseTextProcessor.task(joined, settings,
+                        com.example.transcription.AppContainer.models.cleanupModels.value)
+                    activeCleanup = task
+                    onProgress(BatchProgress("Cleaning up · ${cleanupMode.label} · tap to skip", partCount, partCount, true))
+                    if (abandoned.get()) task.skip()
+                    try { task.start().await() } finally { activeCleanup = null }
                 }
-                BaseTextProcessor.processDetailed(
-                    text = joined,
-                    settings = settings,
-                    cleanupModels = com.example.transcription.AppContainer.models.cleanupModels.value,
-                    isCancelled = { abandoned.get() }
-                )
             } else CleanedText(joined, null)
+            cleaned.warning?.let(fallbackMessages::add)
             return BatchTranscription(
                 text = cleaned.text,
                 model = usedModels.distinct().joinToString(" + "),
@@ -392,13 +398,8 @@ internal object MultimodalReasoningResolver {
             model?.reasoningEfforts?.isNotEmpty() == true ||
             model?.supportedParameters?.contains("reasoning") == true
         if (!supportsReasoning) return ResolvedMultimodalReasoning(include = false, effort = null)
-        val normalized = preference.lowercase()
-        val effort = when {
-            normalized == "auto" -> if (model?.reasoningMandatory == true) null else "none"
-            normalized == "none" && model?.reasoningMandatory == true -> null
-            model == null || model.reasoningEfforts.isEmpty() || normalized in model.reasoningEfforts -> normalized
-            else -> model.defaultReasoningEffort ?: model.reasoningEfforts.lastOrNull()
-        }
+        val normalized = com.example.transcription.data.ReasoningEffortPolicy.normalize(model!!, preference)
+        val effort = if (normalized == "auto") null else normalized
         return ResolvedMultimodalReasoning(include = true, effort = effort)
     }
 

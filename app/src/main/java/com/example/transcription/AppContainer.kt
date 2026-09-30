@@ -13,9 +13,11 @@ import com.example.transcription.data.SecretStore
 import com.example.transcription.data.SettingsStore
 import com.example.transcription.data.UsageStore
 import com.example.transcription.network.OpenRouterClient
+import com.example.transcription.network.CleanupProviderRepository
 import com.example.transcription.recording.MicProfileStore
 
 object AppContainer {
+    val cleanupProviderCatalog = CleanupProviderRepository()
     @Volatile private var initialized = false
     lateinit var settings: SettingsStore
         private set

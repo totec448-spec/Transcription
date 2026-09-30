@@ -18,6 +18,16 @@ that provider's last-known-good models and that a successful slice replaces it.
 
 ## Device test matrix
 
+For 1.03, verify these additions on a configured device:
+
+- Choose AssemblyAI Universal-3.6 Pro Live in the keyboard. Dictate German and English, finish, and verify final text and archived audio. Confirm it is absent from the app batch picker.
+- Under Cleanup, expand a model's right-hand arrow, choose an exact host, restart, and confirm the pin remains. Switch models and back; verify each retains its host. Inspect OpenRouter request logs for the selected host. Verify Automatic removes the pin and that unavailable pins show a failure with raw text preserved.
+- For a model requiring reasoning, verify Off/Auto becomes the lowest reported level and only reported levels appear. For an optional model, verify Off and Model default remain available.
+- Record via both app and keyboard. As soon as Cleaning up appears, tap the center microphone. Verify immediate raw text, one saved note/audio, and that waiting for the remote request does not overwrite the raw result. Repeat with live streaming and with a slow provider.
+- Exercise Spoken Edit, then change the field while it is running. Confirm newer text survives.
+
+Automated request and cancellation regressions are described in [WORKLOG_1.03.md](WORKLOG_1.03.md). Device/provider checks for the new APK remain pending until actually exercised.
+
 Use a real device because emulator microphone, notification, widget launcher, and clipboard behavior are not sufficient proof.
 
 1. **Permissions** — clean-install, start from the app, deny once, then grant. Confirm no recording starts without permission.
@@ -101,7 +111,7 @@ Connected-device proof now includes FIFO imports, a real two-part MP3, accumulat
     must show an actionable error after STT, preserve the text, delete temporary
     audio, and create no edit-model generation. Exactly eight must create one
     edit-model generation. Set the value to 0 and confirm short words work but silence/punctuation is rejected.
-    With the default 1, test "K�rzer", "Mach das freundlicher", and "Als Stichpunkte".
+    With the default 1, test "Kürzer", "Mach das freundlicher", and "Als Stichpunkte".
 42. **Catalog retention and TTL** — populate all catalogs, then independently
     fail OpenRouter STT and OpenRouter text refreshes. Relaunch and
     confirm each failed provider keeps its prior models. Confirm normal app/IME

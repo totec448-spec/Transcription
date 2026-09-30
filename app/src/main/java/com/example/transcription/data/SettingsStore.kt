@@ -4,6 +4,7 @@ import android.content.Context
 import android.app.backup.BackupManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONObject
 
 class SettingsStore(context: Context) {
     private val backupManager = BackupManager(context)
@@ -11,6 +12,7 @@ class SettingsStore(context: Context) {
     private val _settings = MutableStateFlow(load())
     val settings: StateFlow<AppSettings> = _settings
 
+    @Synchronized
     fun update(transform: (AppSettings) -> AppSettings) {
         val proposed = transform(_settings.value).let {
             it.copy(cleanupMinimumInstructionWords = it.cleanupMinimumInstructionWords.coerceIn(0, 50))
@@ -36,6 +38,7 @@ class SettingsStore(context: Context) {
             .putString("multimodal_prompt", value.multimodalPrompt)
             .putString("multimodal_reasoning_effort", value.multimodalReasoningEffort)
             .putString("cleanup_model", value.cleanupModel)
+            .putString("cleanup_providers", JSONObject(value.cleanupProviders).toString())
             .putString("cleanup_prompt", value.cleanupPrompt)
             .putString("cleanup_reasoning_effort", value.cleanupReasoningEffort)
             .putInt("cleanup_minimum_instruction_words", value.cleanupMinimumInstructionWords)
@@ -117,6 +120,7 @@ class SettingsStore(context: Context) {
         val hasCurrentAudioQuality = preferences.getInt("audio_quality_version", 0) >= AUDIO_QUALITY_VERSION
         val defaultAudio = AudioCaptureOptions.highestCompressed
         return AppSettings(
+            cleanupProviders = stringMapFromJson(preferences.getString("cleanup_providers", null)),
             selectedModel = selectedModel,
             fallbackModel = fallbackModel,
             language = LanguageCode.normalize(preferences.getString("language", null) ?: "auto"),

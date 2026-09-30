@@ -7,6 +7,7 @@ import com.example.transcription.data.LanguageCode
 import com.example.transcription.data.ProviderModels
 import com.example.transcription.data.TranscriptionModel
 import com.example.transcription.data.TranscriptionProvider
+import com.example.transcription.data.ReasoningEffortPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedOutputStream
@@ -18,7 +19,8 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-class OpenRouterClient {
+class OpenRouterClient(private val chatCompletionsUrl: String = CHAT_COMPLETIONS_URL) {
+    private val processCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var rewriteConnection: HttpURLConnection? = null
     @Volatile private var processConnection: HttpURLConnection? = null
     /**
@@ -104,7 +106,9 @@ class OpenRouterClient {
             val reasoning = item.optJSONObject("reasoning")
             val id = item.getString("id")
             val commonParameters = parameters.stringValues().toSet()
-            val reasoningEfforts = reasoning?.optJSONArray("supported_efforts").stringValues()
+            val reasoningEfforts = if (reasoning?.has("supported_efforts") == true &&
+                reasoning.isNull("supported_efforts")) ReasoningEffortPolicy.gatewayEfforts
+                else reasoning?.optJSONArray("supported_efforts").stringValues()
             val defaultReasoning = reasoning?.optString("default_effort")?.takeIf(String::isNotBlank)
             val reasoningMandatory = reasoning?.optBoolean("mandatory", false) == true
             if (inputModalities.contains("audio")) {
@@ -161,7 +165,8 @@ class OpenRouterClient {
         reasoningEffort: String?,
         includeReasoning: Boolean,
         includeTemperature: Boolean,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        providerSlug: String? = null
     ): ProcessedText {
         require(originalText.isNotBlank()) { "There is no text to edit." }
         require(spokenInstruction.isNotBlank()) { "No edit instruction was understood." }
@@ -174,6 +179,7 @@ class OpenRouterClient {
             includeReasoning = includeReasoning,
             includeTemperature = includeTemperature,
             timeoutSeconds = timeoutSeconds,
+            providerSlug = providerSlug,
             title = "Scribe V2 Cleanup",
             emptyMessage = "OpenRouter returned no replacement text.",
             assign = { rewriteConnection = it },
@@ -203,9 +209,11 @@ class OpenRouterClient {
         reasoningEffort: String?,
         includeReasoning: Boolean,
         includeTemperature: Boolean,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        providerSlug: String? = null
     ): ProcessedText {
         require(text.isNotBlank()) { "There is no text to process." }
+        check(!processCancelled.get()) { "Cleanup skipped." }
         return chatCompletion(
             apiKey = apiKey,
             model = model,
@@ -215,14 +223,22 @@ class OpenRouterClient {
             includeReasoning = includeReasoning,
             includeTemperature = includeTemperature,
             timeoutSeconds = timeoutSeconds,
+            providerSlug = providerSlug,
             title = "Transcription base cleanup",
             emptyMessage = "OpenRouter returned no processed text.",
-            assign = { processConnection = it },
+            assign = {
+                processConnection = it
+                if (processCancelled.get()) {
+                    it.disconnect()
+                    error("Cleanup skipped.")
+                }
+            },
             release = { connection -> if (processConnection === connection) processConnection = null }
         )
     }
 
     fun cancelProcess() {
+        processCancelled.set(true)
         processConnection?.disconnect()
         processConnection = null
     }
@@ -255,6 +271,7 @@ class OpenRouterClient {
         includeReasoning: Boolean,
         includeTemperature: Boolean,
         timeoutSeconds: Int,
+        providerSlug: String?,
         title: String,
         emptyMessage: String,
         assign: (HttpURLConnection) -> Unit,
@@ -269,11 +286,15 @@ class OpenRouterClient {
                     .put(JSONObject().put("role", "system").put("content", systemPrompt))
                     .put(JSONObject().put("role", "user").put("content", userMessage))
             )
-            .applyCleanupProviderRouting()
+            .applyCleanupProviderRouting(providerSlug)
         if (includeReasoning) {
             payload.put(
                 "reasoning",
-                JSONObject().put("effort", reasoningEffort ?: "none").put("exclude", true)
+                JSONObject().put("exclude", true).apply {
+                    // Auto must preserve the provider default, never disable it.
+                    if (reasoningEffort == "none") put("enabled", false)
+                    else reasoningEffort?.let { put("effort", it) }
+                }
             )
         }
         if (includeTemperature) payload.put("temperature", 0)
@@ -281,7 +302,10 @@ class OpenRouterClient {
         // pass is billed separately from the transcription it follows, so the
         // figure has to come back with the text or it cannot be attributed.
         payload.put("usage", JSONObject().put("include", true))
-        val connection = (URL(CHAT_COMPLETIONS_URL)
+        // Consume content silently; streaming lets connection cancellation stop
+        // generation at hosts that support it. Reasoning is never rendered.
+        payload.put("stream", true)
+        val connection = (URL(chatCompletionsUrl)
             .openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
@@ -289,29 +313,37 @@ class OpenRouterClient {
             readTimeout = timeoutSeconds * 1_000
             setRequestProperty("Authorization", "Bearer $apiKey")
             setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Accept", "text/event-stream")
             setRequestProperty("X-OpenRouter-Title", title)
         }
-        assign(connection)
         var completed = false
         try {
+            assign(connection)
             connection.outputStream.bufferedWriter(StandardCharsets.UTF_8).use { it.write(payload.toString()) }
             val status = connection.responseCode
+            if (status in 200..299 && connection.contentType?.startsWith("text/event-stream") == true) {
+                val result = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use {
+                    CleanupStreamProtocol.read(it, emptyMessage)
+                }
+                completed = true
+                return result
+            }
             val body = connection.readBody(status)
             completed = true
             if (status !in 200..299) throw OpenRouterException(status, errorMessage(body))
             val json = JSONObject(body)
-            json.opt("error")?.let { throw OpenRouterException(status, errorMessage(body)) }
-            val content = json.optJSONArray("choices")
-                ?.optJSONObject(0)
-                ?.optJSONObject("message")
-                ?.optString("content")
-                .orEmpty()
-                .trim()
+            if (json.has("error") && !json.isNull("error")) throw OpenRouterException(status, errorMessage(body))
+            val choice = json.optJSONArray("choices")?.optJSONObject(0)
+            check(choice?.optString("finish_reason") !in setOf("error", "length", "content_filter")) {
+                "Cleanup did not return a complete replacement."
+            }
+            val content = CleanupTextProtocol.sanitizeReplacement(
+                (choice?.optJSONObject("message")?.opt("content") as? String).orEmpty()
+            )
             require(content.isNotBlank()) { emptyMessage }
             val usage = json.optJSONObject("usage")
             return ProcessedText(
-                text = CleanupTextProtocol.sanitizeReplacement(content),
+                text = content,
                 costUsd = usage?.optDouble("cost")?.takeIf { !it.isNaN() },
                 totalTokens = usage?.optLong("total_tokens")?.takeIf { it > 0L }
             )
@@ -403,14 +435,64 @@ class OpenRouterClient {
     }
 }
 
+/** SSE framing and terminal validation shared by automatic cleanup and Edit.
+ * A broken stream must never turn a partial rewrite into a complete field. */
+internal object CleanupStreamProtocol {
+    fun read(reader: java.io.BufferedReader, emptyMessage: String): ProcessedText {
+        val content = StringBuilder()
+        val data = StringBuilder()
+        var usage: JSONObject? = null
+        var done = false
+        fun consume() {
+            if (data.isEmpty()) return
+            val event = data.toString()
+            data.setLength(0)
+            if (event == "[DONE]") { done = true; return }
+            val chunk = JSONObject(event)
+            if (chunk.has("error") && !chunk.isNull("error")) {
+                val message = chunk.optJSONObject("error")?.optString("message") ?: chunk.optString("error")
+                throw OpenRouterException(200, message.ifBlank { "Cleanup stream failed." })
+            }
+            val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
+            check(choice?.optString("finish_reason") !in setOf("error", "length", "content_filter")) {
+                "Cleanup stream did not return a complete replacement."
+            }
+            (choice?.optJSONObject("delta")?.opt("content") as? String)?.let(content::append)
+            chunk.optJSONObject("usage")?.let { usage = it }
+        }
+        while (!done) {
+            val line = reader.readLine() ?: break
+            when {
+                line.isEmpty() -> consume()
+                line.startsWith("data:") -> {
+                    if (data.isNotEmpty()) data.append('\n')
+                    data.append(line.removePrefix("data:").removePrefix(" "))
+                }
+                // SSE comments, event names and IDs carry no replacement text.
+                else -> Unit
+            }
+        }
+        if (!done) consume()
+        check(done) { "Cleanup connection ended before the response completed." }
+        val text = CleanupTextProtocol.sanitizeReplacement(content.toString())
+        require(text.isNotBlank()) { emptyMessage }
+        return ProcessedText(text, usage?.optDouble("cost")?.takeIf(Double::isFinite),
+            usage?.optLong("total_tokens")?.takeIf { it > 0 })
+    }
+}
+
 data class OpenRouterTextCatalog(
     val multimodalAudio: List<TranscriptionModel>,
     val text: List<TranscriptionModel>
 )
 
 /** Prefer the fastest available endpoint for the selected cleanup model. */
-private fun JSONObject.applyCleanupProviderRouting(): JSONObject = apply {
-    put("provider", JSONObject().put("sort", "latency").put("allow_fallbacks", true))
+private fun JSONObject.applyCleanupProviderRouting(providerSlug: String?): JSONObject = apply {
+    put("provider", JSONObject().put("sort", "latency").apply {
+        val pinned = providerSlug?.trim()?.takeIf(String::isNotBlank)
+        put("allow_fallbacks", pinned == null)
+        if (pinned != null) put("only", JSONArray().put(pinned))
+    })
 }
 
 internal object CleanupTextProtocol {

@@ -249,9 +249,9 @@ object CleanupCoordinator {
                     }
                 }
 
-                val cleanupModel = AppContainer.models.cleanupModels.value
-                    .firstOrNull { it.id == settings.cleanupModel }
-                    ?: AppContainer.models.cleanupModels.value.first()
+                val cleanupModel = CleanupModelResolver.resolve(
+                    settings.cleanupModel, AppContainer.models.cleanupModels.value
+                )
                 check(requestGeneration == generation) { "Cleanup cancelled." }
                 val reasoning = CleanupReasoningResolver.resolve(cleanupModel, settings.cleanupReasoningEffort)
                 AppContainer.openRouter.rewriteText(
@@ -263,7 +263,8 @@ object CleanupCoordinator {
                     reasoningEffort = reasoning.effort,
                     includeReasoning = reasoning.include,
                     includeTemperature = "temperature" in cleanupModel.supportedParameters,
-                    timeoutSeconds = settings.providerTimeoutSeconds
+                    timeoutSeconds = settings.providerTimeoutSeconds,
+                    providerSlug = settings.cleanupProviders[settings.cleanupModel]
                 ).also {
                     // Counted the same way the automatic pass is: a spoken edit
                     // is a billed text request, and leaving it out of the totals

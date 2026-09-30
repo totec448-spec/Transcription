@@ -49,12 +49,22 @@ dictated request into a clear instruction for an AI. Each mode has an editable
 system prompt. If the cleanup model fails, you get the raw transcript instead
 of losing the recording.
 
+Tap the center microphone while automatic cleanup is running to skip it and
+use the raw transcript immediately. In Settings → Cleanup, the arrow beside
+each model opens its available OpenRouter host providers. Host choices are
+remembered per model and apply to automatic cleanup and spoken Edit. Fixed
+hosts do not fall back to another host; Automatic prefers the lowest latency.
+Models requiring reasoning start with their lowest supported effort.
+
 **The voice keyboard.** A minimal IME that replaces typing with dictation:
 record, get the cleaned transcript inserted directly into the active field.
 It has its own model browser, live streaming models (ElevenLabs and
 AssemblyAI), an undo stack for its own insertions, a hold-for-punctuation
 space key, and a voice *Edit* key — speak an instruction like "make this more
 formal" and the whole field is rewritten by the cleanup model.
+
+AssemblyAI Universal-3.6 Pro Live is available in the keyboard model browser
+with native multilingual streaming in 32 languages.
 
 **Notes.** Every successful transcription becomes a note: searchable,
 editable, pinnable, with the audio attached — waveform seeking, playback,

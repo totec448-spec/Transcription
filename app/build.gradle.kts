@@ -27,8 +27,8 @@ android {
         applicationId = "io.github.totec448spec.transcription"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.02"
+        versionCode = 4
+        versionName = "1.03"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -112,6 +112,8 @@ dependencies {
     // at native level and then crashes while FFmpegKit builds the Java session result.
     implementation(libs.smart.exception.java)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

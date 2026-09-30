@@ -68,6 +68,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
@@ -162,6 +165,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.example.transcription.data.ReasoningEffortPolicy
+import com.example.transcription.data.withCleanupProvider
+import com.example.transcription.network.CleanupProviderEndpoint
 
 private enum class AppPage(val label: String, val icon: VoiceIcon) {
     RECORD("Record", VoiceIcon.MIC), HISTORY("Notes", VoiceIcon.HISTORY), SETTINGS("Setup", VoiceIcon.SETTINGS)
@@ -389,6 +395,11 @@ private fun ThumbRecorder(state: RecordingState, action: (String) -> Unit) {
 
 @Composable
 private fun ProcessingButton(action: (String) -> Unit) {
+    val state by RecordingController.state.collectAsState()
+    if (state.cleanupInProgress) {
+        BouncyIconButton(VoiceIcon.MIC, { action(RecordingService.ACTION_SKIP_CLEANUP) }, size = 58.dp)
+        return
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         BouncyIconButton(
             VoiceIcon.REFRESH,
@@ -472,12 +483,15 @@ private fun ActiveRecorder(state: RecordingState, action: (String) -> Unit) {
 
 @Composable
 private fun ProcessingState(action: (String) -> Unit) {
+    val state by RecordingController.state.collectAsState()
     Column(Modifier.fillMaxWidth().height(300.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        CircularProgressIndicator(Modifier.size(54.dp), color = MaterialTheme.colorScheme.primary, strokeWidth = 6.dp)
-        Text("Writing it down…", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp))
+        if (state.cleanupInProgress) {
+            BouncyIconButton(VoiceIcon.MIC, { action(RecordingService.ACTION_SKIP_CLEANUP) }, size = 60.dp)
+        } else CircularProgressIndicator(Modifier.size(54.dp), color = MaterialTheme.colorScheme.primary, strokeWidth = 6.dp)
+        Text(if (state.cleanupInProgress) "Tap to skip cleanup" else "Writing it down…", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp))
         Text("The recording is already safe.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
         Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
+            if (!state.cleanupInProgress) OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
             OutlinedButton(onClick = { action(RecordingService.ACTION_ABANDON) }) { Text("Abandon") }
         }
     }
@@ -1684,9 +1698,19 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                ModelPicker(cleanupModels, settings.cleanupModel, providerAvailability) { model ->
-                    updateSettings { it.copy(cleanupModel = model) }
+                ModelPicker(cleanupModels, settings.cleanupModel, providerAvailability,
+                    cleanupProviders = settings.cleanupProviders,
+                    onSelectProvider = { model, slug -> updateSettings { it.withCleanupProvider(model, slug) } }
+                ) { model ->
+                    val metadata = cleanupModels.firstOrNull { it.id == model }
+                    updateSettings { current -> current.copy(
+                        cleanupModel = model,
+                        cleanupReasoningEffort = metadata?.let { ReasoningEffortPolicy.normalize(it, current.cleanupReasoningEffort) } ?: "auto",
+                        baseCleanupReasoningEffort = metadata?.let { ReasoningEffortPolicy.normalize(it, current.baseCleanupReasoningEffort) } ?: "auto"
+                    ) }
                 }
+                Text("Host: ${settings.cleanupProviders[settings.cleanupModel] ?: "Automatic · lowest latency"}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 SettingDivider()
                 Text(
                     "Automatic cleanup runs on every finished transcription before you see it, " +
@@ -2389,10 +2413,13 @@ private fun ModelPicker(
     models: List<TranscriptionModel>,
     selectedId: String,
     providerAvailability: Map<TranscriptionProvider, Boolean>,
+    cleanupProviders: Map<String, String> = emptyMap(),
+    onSelectProvider: ((String, String?) -> Unit)? = null,
     onSelect: (String) -> Unit
 ) {
     val appModels = remember(models) { BrowserRenderingPolicy.appModels(models) }
     var expanded by remember { mutableStateOf(false) }
+    var providerModelId by remember { mutableStateOf<String?>(null) }
     val groupExpansionOverrides = remember { mutableStateMapOf<String, Boolean>() }
     val visibleModelCounts = remember { mutableStateMapOf<String, Int>() }
     val menuScrollState = rememberScrollState()
@@ -2553,12 +2580,24 @@ private fun ModelPicker(
                         ModelMenuItem(
                             model = model,
                             selectedId = selectedId,
-                            enabled = providerAvailability[model.provider] == true
+                            enabled = providerAvailability[model.provider] == true,
+                            providerExpanded = providerModelId == model.id,
+                            onExpandProviders = onSelectProvider?.let { {
+                                providerModelId = if (providerModelId == model.id) null else model.id
+                            } }
                         ) {
                             onSelect(model.id)
                             expanded = false
                             groupExpansionOverrides.clear()
                             visibleModelCounts.clear()
+                        }
+                        if (onSelectProvider != null && providerModelId == model.id) {
+                            CleanupProviderOptions(model.id, cleanupProviders[model.id]) { slug ->
+                                onSelect(model.id)
+                                onSelectProvider(model.id, slug)
+                                expanded = false
+                                providerModelId = null
+                            }
                         }
                     }
                 }
@@ -2593,6 +2632,8 @@ private fun ModelMenuItem(
     model: TranscriptionModel,
     selectedId: String,
     enabled: Boolean,
+    providerExpanded: Boolean = false,
+    onExpandProviders: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val chosen = model.id == selectedId
@@ -2639,6 +2680,62 @@ private fun ModelMenuItem(
                 MaterialTheme.colorScheme.onSurface
             )
         }
+        onExpandProviders?.let { expandProviders ->
+            IconButton(onClick = expandProviders, modifier = Modifier.size(44.dp).semantics { contentDescription = "Choose host provider" }) {
+                LineIcon(VoiceIcon.CHEVRON,
+                    Modifier.size(18.dp).graphicsLayer { rotationZ = if (providerExpanded) 90f else 0f },
+                    MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CleanupProviderOptions(modelId: String, selectedSlug: String?, onSelect: (String?) -> Unit) {
+    var endpoints by remember(modelId) { mutableStateOf<List<CleanupProviderEndpoint>>(emptyList()) }
+    var loading by remember(modelId) { mutableStateOf(true) }
+    var error by remember(modelId) { mutableStateOf<String?>(null) }
+    var retry by remember(modelId) { mutableIntStateOf(0) }
+    LaunchedEffect(modelId, retry) {
+        loading = true
+        error = null
+        try {
+            endpoints = withContext(Dispatchers.IO) {
+                AppContainer.cleanupProviderCatalog.fetch(modelId, AppContainer.secrets.readApiKey(), force = retry > 0)
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) { error = failure.message ?: "Providers unavailable." }
+        finally { loading = false }
+    }
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp)) {
+        DropdownMenuItem(text = { Text("Automatic · lowest latency") },
+            trailingIcon = { if (selectedSlug == null) LineIcon(VoiceIcon.CHECK, Modifier.size(18.dp)) },
+            onClick = { onSelect(null) })
+        when {
+            loading -> Text("Loading host providers…", Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            error != null -> TextButton(onClick = { retry++ }) { Text("$error · Retry") }
+            endpoints.isEmpty() -> Text("No host providers returned.", Modifier.padding(12.dp))
+            else -> {
+                endpoints.forEach { endpoint ->
+                    DropdownMenuItem(
+                        text = { Column {
+                            Text(endpoint.name + endpoint.slug.substringAfter('/', "").let { if (it.isBlank()) "" else " · $it" })
+                            Text(buildString {
+                                append(endpoint.latencySeconds?.let { "P50 ${"%.2f".format(Locale.ROOT, it)} s" } ?: "Latency unavailable")
+                                endpoint.throughput?.let { append(" · ${"%.0f".format(Locale.ROOT, it)} tok/s") }
+                                if (!endpoint.available) append(" · currently unavailable")
+                            }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        } },
+                        trailingIcon = { if (selectedSlug == endpoint.slug) LineIcon(VoiceIcon.CHECK, Modifier.size(18.dp)) },
+                        onClick = { onSelect(endpoint.slug) }
+                    )
+                }
+                TextButton(onClick = { retry++ }) { Text("Refresh providers") }
+            }
+        }
+        Text("Fixed host · no fallback to other hosts. Applies to automatic cleanup and spoken edit.",
+            Modifier.padding(12.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -2892,20 +2989,11 @@ private fun modelPrice(model: TranscriptionModel?): String = when {
     else -> "Usage priced"
 }
 private fun multimodalReasoningOptions(model: TranscriptionModel): List<Pair<String, String>> {
-    val efforts = model.reasoningEfforts.ifEmpty {
-        listOf("minimal", "low", "medium", "high")
-    }
-    return buildList {
-        add(
-            "auto" to if (model.reasoningMandatory) {
-                "Model default · required"
-            } else {
-                "Automatic · off when possible"
-            }
-        )
-        if (!model.reasoningMandatory) add("none" to "Off")
-        efforts.distinct().forEach { effort ->
-            add(effort to effort.replaceFirstChar { it.titlecase(Locale.ROOT) })
+    return ReasoningEffortPolicy.options(model).map { effort ->
+        effort to when (effort) {
+            "auto" -> "Model default"
+            "none" -> "Off"
+            else -> effort.replaceFirstChar { it.titlecase(Locale.ROOT) }
         }
     }
 }
@@ -2916,8 +3004,8 @@ private fun supportsMultimodalReasoning(model: TranscriptionModel) =
         "reasoning" in model.supportedParameters
 
 private fun multimodalReasoningLabel(value: String, model: TranscriptionModel): String {
-    val normalized = value.lowercase()
+    val normalized = ReasoningEffortPolicy.normalize(model, value)
     return multimodalReasoningOptions(model).firstOrNull { it.first == normalized }?.second
-        ?: if (model.reasoningMandatory) "Model default · required" else "Automatic · off when possible"
+        ?: "Model default"
 }
 private fun formatKhz(value: Int): String = if (value % 1_000 == 0) (value / 1_000).toString() else "%.2f".format(Locale.US, value / 1_000.0)

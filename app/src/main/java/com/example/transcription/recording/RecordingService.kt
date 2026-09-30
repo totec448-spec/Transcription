@@ -69,6 +69,13 @@ class RecordingService : Service() {
             ACTION_RETRANSCRIBE -> retranscribeHistory(intent.getStringExtra(EXTRA_HISTORY_ID))
             ACTION_USE_FALLBACK -> useFallback()
             ACTION_ABANDON -> abandonProcessing()
+            ACTION_SKIP_CLEANUP -> {
+                val state = RecordingController.state.value
+                if (state.phase == RecordingPhase.PROCESSING && state.cleanupInProgress &&
+                    (!intent.hasExtra(EXTRA_REQUEST_ID) || intent.getStringExtra(EXTRA_REQUEST_ID) == state.requestId)) {
+                    activeEngine?.skipCleanup()
+                }
+            }
             ACTION_CANCEL_REQUEST -> cancelRequest(intent.getStringExtra(EXTRA_REQUEST_ID))
             ACTION_LIVE_START -> startLiveForeground()
             ACTION_LIVE_REFRESH -> refreshLiveForeground()
@@ -279,7 +286,9 @@ class RecordingService : Service() {
                         AppContainer.history.updateProgress(it, progress.label, progress.completed, progress.total)
                     }
                     handler.post {
-                        RecordingController.update { it.copy(statusLabel = progress.label) }
+                        if (activeEngine === engine && !engine.isAbandoned()) {
+                            RecordingController.update { it.copy(statusLabel = progress.label, cleanupInProgress = progress.cleanupInProgress) }
+                        }
                         getSystemService(android.app.NotificationManager::class.java).notify(
                             NotificationHelper.ACTIVE_ID,
                             NotificationHelper.active(this, RecordingController.state.value)
@@ -374,6 +383,7 @@ class RecordingService : Service() {
         RecordingController.update {
             it.copy(
                 phase = RecordingPhase.SUCCESS,
+                cleanupInProgress = false,
                 resultText = result.text,
                 statusLabel = null,
                 errorMessage = null,
@@ -436,6 +446,7 @@ class RecordingService : Service() {
         RecordingController.update {
             it.copy(
                 phase = RecordingPhase.SUCCESS,
+                cleanupInProgress = false,
                 resultText = text,
                 statusLabel = null,
                 errorMessage = null,
@@ -602,6 +613,7 @@ class RecordingService : Service() {
         const val ACTION_RETRANSCRIBE = "com.example.transcription.action.RETRANSCRIBE"
         const val ACTION_USE_FALLBACK = "com.example.transcription.action.USE_FALLBACK"
         const val ACTION_ABANDON = "com.example.transcription.action.ABANDON"
+        const val ACTION_SKIP_CLEANUP = "com.example.transcription.action.SKIP_CLEANUP"
         const val ACTION_CANCEL_REQUEST = "com.example.transcription.action.CANCEL_REQUEST"
         const val ACTION_LIVE_START = "com.example.transcription.action.LIVE_START"
         const val ACTION_LIVE_REFRESH = "com.example.transcription.action.LIVE_REFRESH"

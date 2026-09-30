@@ -19,7 +19,7 @@ class MultimodalReasoningResolverTest {
     )
 
     @Test fun mandatoryModelNeverReceivesNone() {
-        assertNull(
+        assertEquals("minimal",
             MultimodalReasoningResolver.resolve(
                 mandatoryModel.id,
                 "none",
@@ -41,7 +41,7 @@ class MultimodalReasoningResolverTest {
 
     @Test fun unsupportedEffortFallsBackToCatalogDefault() {
         assertEquals(
-            ResolvedMultimodalReasoning(include = true, effort = "medium"),
+            ResolvedMultimodalReasoning(include = true, effort = "minimal"),
             MultimodalReasoningResolver.resolve(
                 mandatoryModel.id,
                 "max",

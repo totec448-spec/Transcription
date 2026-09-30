@@ -130,6 +130,7 @@ class PortableBackupManager(
         put("multimodalPrompt", value.multimodalPrompt)
         put("multimodalReasoningEffort", value.multimodalReasoningEffort)
         put("cleanupModel", value.cleanupModel)
+        put("cleanupProviders", JSONObject(value.cleanupProviders))
         put("cleanupPrompt", value.cleanupPrompt)
         put("baseCleanupMode", value.baseCleanupMode.stored)
         put("baseCleanupPrompts", JSONObject(value.baseCleanupPrompts))
@@ -154,6 +155,7 @@ class PortableBackupManager(
     }
 
     private fun settingsFromJson(json: JSONObject) = AppSettings(
+        cleanupProviders = stringMapFromJson(json.optJSONObject("cleanupProviders")?.toString()),
         selectedModel = json.optString("selectedModel", ProviderModels.ELEVENLABS_SCRIBE_V2),
         fallbackModel = json.optString("fallbackModel", ProviderModels.OPENROUTER_WHISPER_LARGE_V3),
         language = LanguageCode.normalize(json.optString("language", "auto")),

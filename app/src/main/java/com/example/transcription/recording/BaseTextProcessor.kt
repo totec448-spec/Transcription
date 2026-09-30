@@ -9,6 +9,9 @@ import com.example.transcription.data.ModelAvailabilityPolicy
 import com.example.transcription.data.TranscriptionModel
 import com.example.transcription.data.baseCleanupPrompt
 import com.example.transcription.data.TranscriptionProvider
+import com.example.transcription.data.ProviderModels
+import com.example.transcription.data.ReasoningEffortPolicy
+import com.example.transcription.network.OpenRouterClient
 
 /**
  * The automatic pass every finished transcript takes before it reaches the
@@ -57,7 +60,8 @@ object BaseTextProcessor {
         text: String,
         settings: AppSettings,
         cleanupModels: List<TranscriptionModel>,
-        isCancelled: () -> Boolean = { false }
+        isCancelled: () -> Boolean = { false },
+        client: OpenRouterClient = AppContainer.openRouter
     ): CleanedText {
         // Every skip is logged. A cleanup that silently does nothing is
         // indistinguishable from one that is broken, which is exactly the
@@ -67,17 +71,15 @@ object BaseTextProcessor {
         if (text.isBlank()) return skip(text, "empty_transcript")
         val prompt = promptFor(settings, mode).takeIf { it.isNotBlank() }
             ?: return skip(text, "empty_prompt")
-        val model = cleanupModels.firstOrNull { it.id == settings.cleanupModel }
-            ?: cleanupModels.firstOrNull()
-            ?: return skip(text, "no_cleanup_model")
+        val model = CleanupModelResolver.resolve(settings.cleanupModel, cleanupModels)
         val apiKey = runCatching { AppContainer.secrets.readApiKey() }.getOrNull().orEmpty()
         if (apiKey.isBlank()) return skip(text, "no_openrouter_key")
         if (isCancelled()) return skip(text, "cancelled")
 
         val effort = CleanupReasoningResolver.resolve(model, settings.baseCleanupReasoningEffort)
         val started = SystemClock.elapsedRealtime()
-        val result = runCatching {
-            AppContainer.openRouter.processText(
+        val request = runCatching {
+            client.processText(
                 apiKey = apiKey,
                 model = model.id,
                 systemPrompt = prompt,
@@ -85,24 +87,35 @@ object BaseTextProcessor {
                 reasoningEffort = effort.effort,
                 includeReasoning = effort.include,
                 includeTemperature = "temperature" in model.supportedParameters,
-                timeoutSeconds = settings.providerTimeoutSeconds
+                timeoutSeconds = settings.providerTimeoutSeconds,
+                providerSlug = settings.cleanupProviders[settings.cleanupModel]
             )
         }.onSuccess {
             Log.i(
                 TAG,
                 "base_cleanup=${settings.baseCleanupMode.stored} model=${model.id.substringAfterLast('/')} " +
                     "ms=${SystemClock.elapsedRealtime() - started} in_chars=${text.length} " +
-                    "out_chars=${it.text.length} cost=${it.costUsd ?: -1.0}"
+                    "out_chars=${it.text.length} changed=${it.text != text} cost=${it.costUsd ?: -1.0}"
             )
         }.onFailure {
-            Log.w(TAG, "base_cleanup_skipped reason=request_failed detail=${it.message}")
-        }.getOrNull() ?: return CleanedText(text, null)
+            Log.w(TAG, "base_cleanup_skipped reason=request_failed model=${model.id} detail=${it.message}")
+        }
+        val result = request.getOrNull() ?: return CleanedText(
+            text, null, CleanupFeedback.failure(model.name, request.exceptionOrNull())
+        )
 
         // A failed pass is charged for too when it reached the model, but a
         // billed request that produced nothing usable is not worth attributing
         // to a note; it still belongs in the running total.
         recordUsage(result.costUsd)
         return CleanedText(result.text.takeIf { it.isNotBlank() } ?: text, result.costUsd)
+    }
+
+    internal fun task(text: String, settings: AppSettings, models: List<TranscriptionModel>): AutomaticCleanupTask {
+        val client = OpenRouterClient()
+        return AutomaticCleanupTask(text, { cancelled ->
+            processDetailed(text, settings, models, cancelled, client)
+        }, client::cancelProcess)
     }
 
     private fun recordUsage(costUsd: Double?) {
@@ -125,7 +138,23 @@ object BaseTextProcessor {
 }
 
 /** A cleaned transcript together with what the pass cost, if anything. */
-data class CleanedText(val text: String, val costUsd: Double?)
+data class CleanedText(val text: String, val costUsd: Double?, val warning: String? = null)
+
+internal object CleanupFeedback {
+    fun failure(modelName: String, error: Throwable?) =
+        "Cleanup failed ($modelName). Raw transcript kept. ${error?.message ?: "Please retry or choose another cleanup model."}"
+}
+
+/** Keep the requested identity even when a refreshed catalog removes it.
+ * Unknown capabilities are omitted and API failures are shown to the user. */
+internal object CleanupModelResolver {
+    fun resolve(selected: String, models: List<TranscriptionModel>): TranscriptionModel =
+        models.firstOrNull { it.id == selected } ?: TranscriptionModel(
+            id = selected.ifBlank { ProviderModels.OPENROUTER_DEEPSEEK_V4_FLASH },
+            name = selected.substringAfter("openrouter-text/").ifBlank { "Default cleanup model" },
+            description = "", pricePerHourUsd = null, provider = TranscriptionProvider.OPENROUTER_TEXT
+        )
+}
 
 internal data class ResolvedCleanupReasoning(val include: Boolean, val effort: String?)
 
@@ -134,23 +163,14 @@ internal data class ResolvedCleanupReasoning(val include: Boolean, val effort: S
  * own configured effort but resolve it against the same model capabilities.
  */
 internal object CleanupReasoningResolver {
-    /** Settings that mean "no effort was chosen", so the model's own default wins. */
-    private val UNSET_EFFORTS = setOf("none", "auto")
-
     fun resolve(model: TranscriptionModel, configured: String): ResolvedCleanupReasoning {
         val supportsReasoning = model.reasoningMandatory ||
             model.reasoningEfforts.isNotEmpty() ||
             "reasoning" in model.supportedParameters
         if (!supportsReasoning) return ResolvedCleanupReasoning(include = false, effort = null)
-        val normalized = configured.lowercase()
-        val effort = when {
-            model.reasoningMandatory && normalized in UNSET_EFFORTS ->
-                model.defaultReasoningEffort ?: model.reasoningEfforts.firstOrNull() ?: "high"
-            normalized == "auto" -> null
-            else -> normalized
-        }
+        val effort = ReasoningEffortPolicy.normalize(model, configured).takeIf { it != "auto" }
         return ResolvedCleanupReasoning(
-            include = effort != null || model.reasoningMandatory,
+            include = true,
             effort = effort
         )
     }

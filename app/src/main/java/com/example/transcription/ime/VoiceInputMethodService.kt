@@ -57,7 +57,6 @@ import com.example.transcription.data.ThemeMode
 import com.example.transcription.data.TranscriptionEntry
 import com.example.transcription.data.TranscriptionProvider
 import com.example.transcription.recording.BaseTextProcessor
-import com.example.transcription.recording.LiveRecordingCoordinator
 import com.example.transcription.recording.CleanupCoordinator
 import com.example.transcription.recording.CleanupPhase
 import com.example.transcription.recording.CleanupState
@@ -84,7 +83,6 @@ import kotlin.math.roundToInt
  * vendor skins while retaining the small, familiar Gboard-sized footprint.
  */
 class VoiceInputMethodService : InputMethodService() {
-    private var liveCleanup: com.example.transcription.recording.AutomaticCleanupTask? = null
     private val handler = Handler(Looper.getMainLooper())
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -144,18 +142,10 @@ class VoiceInputMethodService : InputMethodService() {
     private var renderedOptions: List<ModelOption>? = null
     private var renderedSelection: String? = null
     private var selectedModelId = ""
-    private var streaming: StreamingVoiceSession? = null
-    private var composingFinal = ""
     private var latestPartial = ""
-    private var lastFinal = ""
-    private var streamingStartedAt = 0L
-    private var streamingModelId = ""
-    private var streamingHistorySaved = false
-    private var liveGatePaused = false
-    private var lastLiveWidgetUpdateMs = 0L
-    private var liveFinalize: Runnable? = null
-    private var liveFinalizeDeadline = 0L
     private var batchRequestId: String? = null
+    private var batchEditorToken = ""
+    private var liveDeliveredText = ""
     private var enterBehavior = ImeInteractionPolicy.enterBehavior(0, 0)
     private var batchWatch: Job? = null
     private var lastStatusText: String? = null
@@ -277,14 +267,11 @@ class VoiceInputMethodService : InputMethodService() {
         // input method, so every activation is one of the few chances to see
         // what was copied elsewhere. One read, no listener, no polling.
         AppContainer.clipboard.capture(getSystemService(ClipboardManager::class.java))
-        if (::root.isInitialized && streaming == null &&
-            RecordingController.state.value.phase !in ACTIVE_PHASES &&
+        if (::root.isInitialized && RecordingController.state.value.phase !in ACTIVE_PHASES &&
             !CleanupCoordinator.isOwnerActive(CLEANUP_OWNER)
         ) {
             options = buildModelOptions()
-            if (options.none { it.id == selectedModelId && it.keyAvailable }) {
-                selectedModelId = resolveImeModel()
-            }
+            selectedModelId = resolveImeModel()
             updateModelControl()
             // The browser is a few hundred views behind a closed overlay every
             // time this runs, and most keyboard opens see exactly the catalog,
@@ -295,12 +282,17 @@ class VoiceInputMethodService : InputMethodService() {
             }
             showIdle()
         }
+        if (::root.isInitialized) {
+            applyBatchState(RecordingController.state.value)
+            watchBatchState()
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
         stopWatchingBatchState()
         cancelTypingSample()
-        if (uiMode != UiMode.IDLE || batchRequestId != null) abandon()
+        // Hiding a keyboard is not a stop/discard command.
+        clearLiveComposing()
         if (::root.isInitialized) closeOverlay()
         editorConnection = null
         super.onFinishInputView(finishingInput)
@@ -310,12 +302,7 @@ class VoiceInputMethodService : InputMethodService() {
         if (CleanupCoordinator.isOwnerActive(CLEANUP_OWNER)) {
             CleanupCoordinator.cancel(CLEANUP_OWNER)
         }
-        if (streaming != null || RecordingController.state.value.isLive) {
-            abandon()
-        }
-        liveFinalize?.let(handler::removeCallbacks)
-        liveFinalize = null
-        LiveRecordingCoordinator.detach()
+        stopWatchingBatchState()
         unregisterOverlayBackHandler()
         serviceScope.cancel()
         super.onDestroy()
@@ -1102,16 +1089,15 @@ class VoiceInputMethodService : InputMethodService() {
     }
 
     /**
-     * The keyboard keeps its own model, separate from the app's: dictation into
-     * a text field wants Scribe v2, while the app's Notes default is tuned for
-     * longer recordings. A stored pick only survives while its key does.
+     * Batch recordings share the app's selected model. An explicitly selected
+     * live model remains available in the keyboard.
      */
     private fun resolveImeModel(): String {
         val stored = getSharedPreferences(IME_PREFERENCES, Context.MODE_PRIVATE)
             .getString(KEY_MODEL, null)
             .orEmpty()
-        options.firstOrNull { it.id == stored && it.keyAvailable }?.let { return it.id }
-        options.firstOrNull { it.id == IME_DEFAULT_MODEL && it.keyAvailable }?.let { return it.id }
+        val preferred = if (ProviderModels.isStreaming(stored)) stored else AppContainer.settings.settings.value.selectedModel
+        options.firstOrNull { it.id == preferred && it.keyAvailable }?.let { return it.id }
         // Only an explicitly stored pick may be a live model. Every automatic
         // choice below stays on batch: a realtime session that nobody asked for
         // behaves differently enough to feel like a different keyboard.
@@ -1174,8 +1160,7 @@ class VoiceInputMethodService : InputMethodService() {
             UiMode.IDLE -> startSelectedModel()
             UiMode.RECORDING, UiMode.PAUSED -> finishRecording()
             UiMode.PROCESSING -> {
-                if (liveCleanup != null) liveCleanup?.skip()
-                else if (RecordingController.state.value.cleanupInProgress) {
+                if (RecordingController.state.value.cleanupInProgress) {
                     batchRequestId?.takeIf { it == RecordingController.state.value.requestId }?.let {
                         sendRecordingAction(RecordingService.ACTION_SKIP_CLEANUP, it)
                     }
@@ -1286,7 +1271,7 @@ class VoiceInputMethodService : InputMethodService() {
         super.onUpdateSelection(
             oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd
         )
-        if (typingSample != null || streaming != null) return
+        if (typingSample != null || RecordingController.state.value.isLive && RecordingController.state.value.phase in ACTIVE_PHASES) return
         val task = Runnable {
             typingSample = null
             if (uiMode != UiMode.IDLE) return@Runnable
@@ -1435,259 +1420,37 @@ class VoiceInputMethodService : InputMethodService() {
             return
         }
 
-        if (isLiveModel()) {
-            startStreaming()
-        } else {
-            val requestId = UUID.randomUUID().toString()
-            batchRequestId = requestId
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, RecordingService::class.java)
-                    .setAction(RecordingService.ACTION_START)
-                    .putExtra(RecordingService.EXTRA_MODEL_OVERRIDE, selectedModelId)
-                    .putExtra(RecordingService.EXTRA_REQUEST_ID, requestId)
-                    .putExtra(RecordingService.EXTRA_SUPPRESS_AUTO_COPY, true)
-            )
-            showRecording()
-            watchBatchState()
-        }
-    }
-
-    private fun startStreaming() {
-        composingFinal = ""
-        latestPartial = ""
-        lastFinal = ""
-        streamingStartedAt = SystemClock.elapsedRealtime()
-        streamingModelId = selectedModelId
-        streamingHistorySaved = false
-        liveGatePaused = false
-        lastLiveWidgetUpdateMs = 0L
-        val archive = File(filesDir, "latest/live-recording.wav").apply {
-            parentFile?.mkdirs()
-            if (exists()) delete()
-        }
-        val session = StreamingVoiceSession(
-            context = this,
-            modelId = selectedModelId,
-            secrets = AppContainer.secrets,
-            profiles = AppContainer.micProfiles,
-            archiveFile = archive,
-            gateSilence = AppContainer.settings.settings.value.trimSilenceBeforeUpload,
-            onPartial = { updateComposing(it) },
-            onFinal = { value ->
-                val clean = value.trim()
-                if (clean.isNotBlank() && clean != lastFinal) {
-                    lastFinal = clean
-                    val separator = if (composingFinal.isBlank()) "" else " "
-                    currentInputConnection?.commitText("$separator$clean", 1)
-                    composingFinal = listOf(composingFinal, clean)
-                        .filter(String::isNotBlank)
-                        .joinToString(" ")
-                    latestPartial = ""
-                    renderLiveStatus(composingFinal)
-                }
-                // A final that lands while we are finishing is the answer we
-                // were waiting for, so stop waiting the full budget for it.
-                advanceLiveFinalize()
-            },
-            onAmplitude = {
-                mic.level = it
-                publishLiveLevel(it)
-            },
-            onSilenceGate = { paused ->
-                liveGatePaused = paused
-                if (streaming != null) renderLiveStatus()
-            },
-            onError = {
-                Toast.makeText(this, it, Toast.LENGTH_LONG).show()
-                abandon()
-            }
+        val requestId = UUID.randomUUID().toString()
+        batchRequestId = requestId
+        batchEditorToken = historyFieldToken
+        liveDeliveredText = ""
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, RecordingService::class.java)
+                .setAction(RecordingService.ACTION_START)
+                .putExtra(RecordingService.EXTRA_MODEL_OVERRIDE, selectedModelId)
+                .putExtra(RecordingService.EXTRA_REQUEST_ID, requestId)
+                .putExtra(RecordingService.EXTRA_SUPPRESS_AUTO_COPY, true)
         )
-        streaming = session
-        runCatching { session.start() }
-            .onSuccess {
-                RecordingController.set(
-                    RecordingState(
-                        phase = RecordingPhase.RECORDING,
-                        audioPath = archive.absolutePath,
-                        isLive = true,
-                        modelId = selectedModelId
-                    )
-                )
-                LiveRecordingCoordinator.attach(
-                    onFinish = {
-                        if (streaming != null && uiMode == UiMode.RECORDING) finishRecording()
-                    },
-                    onDiscard = {
-                        if (streaming != null) abandon()
-                    }
-                )
-                ContextCompat.startForegroundService(
-                    this,
-                    Intent(this, RecordingService::class.java)
-                        .setAction(RecordingService.ACTION_LIVE_START)
-                )
-                showRecording()
-            }
-            .onFailure {
-                Toast.makeText(
-                    this,
-                    it.message ?: "Streaming could not start.",
-                    Toast.LENGTH_LONG
-                ).show()
-                session.abandon()
-                LiveRecordingCoordinator.detach()
-                streaming = null
-                showIdle()
-            }
-    }
-
-    private fun publishLiveLevel(level: Float) {
-        val elapsed = (SystemClock.elapsedRealtime() - streamingStartedAt).coerceAtLeast(0L)
-        RecordingController.update { state ->
-            if (!state.isLive) state else state.withLevel(elapsed, level)
-        }
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastLiveWidgetUpdateMs >= LIVE_WIDGET_UPDATE_MS) {
-            lastLiveWidgetUpdateMs = now
-            TranscriptionWidgetProvider.updateWaveforms(this)
-        }
-    }
-
-    private fun updateComposing(partial: String) {
-        latestPartial = partial.trim()
-        val value = listOf(composingFinal, partial.trim())
-            .filter(String::isNotBlank)
-            .joinToString(" ")
-        // Keep only the provider's unstable partial composing. Rewriting the
-        // complete live transcript here made Delete appear non-functional,
-        // because the next streaming update restored already deleted text.
-        val editablePartial = if (composingFinal.isNotBlank() && latestPartial.isNotBlank()) {
-            " $latestPartial"
-        } else {
-            latestPartial
-        }
-        currentInputConnection?.setComposingText(editablePartial, 1)
-        renderLiveStatus(value)
-    }
-
-    /**
-     * One place renders the live line, so the silence pause can appear without
-     * every transcript update overwriting it a moment later.
-     */
-    private fun renderLiveStatus(
-        transcript: String = listOf(composingFinal, latestPartial)
-            .filter(String::isNotBlank)
-            .joinToString(" ")
-    ) {
-        val head = if (liveGatePaused) "PAUSED" else "LIVE"
-        setStatusText(if (transcript.isBlank()) head else "$head  ·  ${transcript.takeLast(28)}")
+        showRecording()
+        watchBatchState()
     }
 
     private fun togglePause() {
-        if (isLiveModel() || streaming != null) return
+        if (RecordingController.state.value.isLive) return
         sendRecordingAction(RecordingService.ACTION_TOGGLE_PAUSE)
     }
 
     private fun finishRecording() {
-        val activeStreaming = streaming
-        if (activeStreaming != null) {
-            activeStreaming.accept()
-            val elapsed = (SystemClock.elapsedRealtime() - streamingStartedAt).coerceAtLeast(0L)
-            RecordingController.update { state ->
-                state.copy(
-                    phase = RecordingPhase.PROCESSING,
-                    elapsedMs = elapsed,
-                    amplitude = 0f,
-                    isLive = true,
-                    modelId = streamingModelId
-                )
-            }
-            sendLiveAction(RecordingService.ACTION_LIVE_REFRESH)
-            showProcessing("Finishing live transcript…")
-            liveFinalizeDeadline = SystemClock.elapsedRealtime() + LIVE_FINALIZE_MAX_WAIT_MS
-            val finalize = Runnable {
-                liveFinalize = null
-                if (streaming !== activeStreaming) return@Runnable
-                currentInputConnection?.finishComposingText()
-                val text = liveTranscriptText()
-                val mode = BaseTextProcessor.effectiveMode(AppContainer.settings.settings.value)
-                if (mode == BaseCleanupMode.OFF || text.isBlank()) {
-                    completeLiveSession(activeStreaming, text)
-                } else {
-                    // Live text is already in the field, so the cleanup runs
-                    // after the fact and swaps exactly the range we inserted.
-                    val settings = AppContainer.settings.settings.value
-                    val cleanupModels = AppContainer.models.cleanupModels.value
-                    val task = BaseTextProcessor.task(text, settings, cleanupModels)
-                    liveCleanup = task
-                    RecordingController.update { it.copy(cleanupInProgress = true, statusLabel = "Cleaning up · ${mode.label} · tap to skip") }
-                    showProcessing("Cleaning up · ${mode.label} · tap to skip", canSkipCleanup = true)
-                    task.start()
-                    Thread {
-                        val cleaned = task.await()
-                        handler.post {
-                            if (streaming !== activeStreaming) return@post
-                            liveCleanup = null
-                            val applied = if (cleaned.text != text) replaceLiveTranscript(text, cleaned.text) else false
-                            val warning = cleaned.warning ?: if (cleaned.text != text && !applied)
-                                "Cleanup completed, but the text or cursor changed; raw transcript kept." else null
-                            completeLiveSession(activeStreaming, if (applied) cleaned.text else text, warning, cleaned.costUsd)
-                            warning?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
-                        }
-                    }.start()
-                }
-            }
-            liveFinalize = finalize
-            handler.postDelayed(finalize, LIVE_FINALIZE_MAX_WAIT_MS)
-        } else {
-            sendRecordingAction(RecordingService.ACTION_FINISH)
-            showProcessing("Transcribing…")
+        val state = RecordingController.state.value
+        // Finishing a recording from another surface targets this visible editor.
+        if (batchRequestId != state.requestId) {
+            batchRequestId = state.requestId
+            batchEditorToken = historyFieldToken
+            liveDeliveredText = ""
         }
-    }
-
-    /**
-     * Brings the pending finalize forward once the provider has answered.
-     *
-     * Finishing used to sit on a flat [LIVE_FINALIZE_MAX_WAIT_MS] whatever
-     * happened, so "Finishing live transcript…" stayed on screen for a full
-     * second after the transcript was already in the field — the wait was
-     * budgeted for the worst case and then charged to every case. The budget
-     * is still the ceiling; a final that arrives simply collapses it to
-     * [LIVE_FINALIZE_SETTLE_MS], which is short enough to feel immediate and
-     * long enough to absorb a second final from the same commit.
-     */
-    private fun advanceLiveFinalize() {
-        val finalize = liveFinalize ?: return
-        val remaining = liveFinalizeDeadline - SystemClock.elapsedRealtime()
-        if (remaining <= LIVE_FINALIZE_SETTLE_MS) return
-        handler.removeCallbacks(finalize)
-        handler.postDelayed(finalize, minOf(LIVE_FINALIZE_SETTLE_MS, remaining))
-    }
-
-    private fun completeLiveSession(session: StreamingVoiceSession, text: String, warning: String? = null, cleanupCost: Double? = null) {
-        val historyId = saveLiveHistory(session, text, warning, cleanupCost)
-        RecordingController.update { state ->
-            state.copy(
-                phase = RecordingPhase.SUCCESS,
-                cleanupInProgress = false,
-                fallbackMessage = warning,
-                amplitude = 0f,
-                resultText = text,
-                statusLabel = null,
-                historyId = historyId,
-                audioPath = historyId?.let {
-                    File(filesDir, "audio_history/$it.wav").absolutePath
-                },
-                isLive = true,
-                modelId = streamingModelId
-            )
-        }
-        LiveRecordingCoordinator.detach()
-        streaming = null
-        liveFinalize = null
-        sendLiveAction(RecordingService.ACTION_LIVE_STOP)
-        showIdle()
+        sendRecordingAction(RecordingService.ACTION_FINISH)
+        showProcessing(if (state.isLive) "Finishing live transcript…" else "Transcribing…")
     }
 
     /**
@@ -1714,124 +1477,88 @@ class VoiceInputMethodService : InputMethodService() {
     }
 
     private fun abandon() {
-        liveCleanup?.skip()
-        liveCleanup = null
         if (CleanupCoordinator.isOwnerActive(CLEANUP_OWNER)) {
             CleanupCoordinator.cancel(CLEANUP_OWNER)
-            showIdle()
-            return
-        }
-        stopWatchingBatchState()
-        val ownedBatchRequest = batchRequestId
-        batchRequestId = null
-        liveFinalize?.let(handler::removeCallbacks)
-        liveFinalize = null
-        val wasLive = streaming != null || RecordingController.state.value.isLive
-        streaming?.abandon()
-        streaming = null
-        if (wasLive) {
-            LiveRecordingCoordinator.detach()
-            RecordingController.set(RecordingState())
-            sendLiveAction(RecordingService.ACTION_LIVE_STOP)
-        } else if (ownedBatchRequest != null) {
-            sendRecordingAction(
-                RecordingService.ACTION_CANCEL_REQUEST,
-                ownedBatchRequest
-            )
         } else {
             when (RecordingController.state.value.phase) {
-                RecordingPhase.RECORDING, RecordingPhase.PAUSED ->
-                    sendRecordingAction(RecordingService.ACTION_DISCARD)
-                RecordingPhase.PROCESSING ->
-                    sendRecordingAction(RecordingService.ACTION_ABANDON)
+                RecordingPhase.RECORDING, RecordingPhase.PAUSED -> sendRecordingAction(RecordingService.ACTION_DISCARD)
+                RecordingPhase.PROCESSING -> sendRecordingAction(RecordingService.ACTION_ABANDON)
                 else -> Unit
             }
         }
-        currentInputConnection?.setComposingText("", 1)
-        currentInputConnection?.finishComposingText()
-        composingFinal = ""
-        latestPartial = ""
+        batchRequestId = null
+        clearLiveComposing()
+        liveDeliveredText = ""
         showIdle()
     }
 
-    private fun liveTranscriptText() = listOf(composingFinal, latestPartial)
-            .map(String::trim)
-            .filter(String::isNotBlank)
-            .joinToString(" ")
-            .trim()
-
-    private fun saveLiveHistory(session: StreamingVoiceSession, text: String, warning: String?, cleanupCost: Double?): String? {
-        if (streamingHistorySaved) return null
-        val sourceAudio = session.archivedAudio()
-        if (text.isBlank() && sourceAudio == null) return null
-        streamingHistorySaved = true
-        val id = UUID.randomUUID().toString()
-        val archivedAudio = sourceAudio?.let { source ->
-            File(filesDir, "audio_history/$id.wav").also { destination ->
-                destination.parentFile?.mkdirs()
-                if (!source.renameTo(destination)) {
-                    source.copyTo(destination, overwrite = true)
-                    source.delete()
-                }
-            }
+    private fun clearLiveComposing() {
+        if (latestPartial.isNotBlank()) {
+            currentInputConnection?.setComposingText("", 1)
+            currentInputConnection?.finishComposingText()
         }
-        AppContainer.history.add(
-            TranscriptionEntry(
-                id = id,
-                text = text,
-                createdAt = System.currentTimeMillis(),
-                durationMs = (SystemClock.elapsedRealtime() - streamingStartedAt).coerceAtLeast(0L),
-                modelId = streamingModelId,
-                fallbackMessage = warning,
-                cleanupCostUsd = cleanupCost,
-                audioPath = archivedAudio?.absolutePath,
-                audioFormat = "wav",
-                inputBytes = archivedAudio?.length() ?: 0L
-            )
-        )
-        return id
+        latestPartial = ""
     }
 
     private fun applyBatchState(state: RecordingState) {
-        if (!ImeInteractionPolicy.ownsBatchState(batchRequestId, state.requestId)) {
-            return
-        }
+        if (!::root.isInitialized || CleanupCoordinator.isOwnerActive(CLEANUP_OWNER)) return
+        val canInsert = ImeInteractionPolicy.ownsBatchState(batchRequestId, state.requestId) &&
+            batchEditorToken == historyFieldToken && editorConnection != null
         when (state.phase) {
-            RecordingPhase.RECORDING -> {
-                uiMode = UiMode.RECORDING
-                mic.level = state.amplitude
-                setStatusText(clock(state.elapsedMs))
-                pause.text = "Ⅱ"
-                pause.contentDescription = "Pause recording"
+            RecordingPhase.RECORDING, RecordingPhase.PAUSED -> {
+                if (uiMode !in setOf(UiMode.RECORDING, UiMode.PAUSED)) showRecording()
+                uiMode = if (state.phase == RecordingPhase.PAUSED) UiMode.PAUSED else UiMode.RECORDING
+                mic.level = if (state.phase == RecordingPhase.PAUSED) 0f else state.amplitude
+                val prefix = if (state.phase == RecordingPhase.PAUSED || state.liveSilencePaused) "PAUSED  ·  "
+                    else if (state.isLive) "LIVE  ·  " else ""
+                setStatusText(prefix + clock(state.elapsedMs))
+                pause.visibility = if (state.isLive) View.GONE else View.VISIBLE
+                pause.text = if (state.phase == RecordingPhase.PAUSED) "▶" else "Ⅱ"
+                pause.contentDescription = if (state.phase == RecordingPhase.PAUSED) "Resume recording" else "Pause recording"
+                if (state.isLive && canInsert) renderLiveText(state)
             }
-            RecordingPhase.PAUSED -> {
-                uiMode = UiMode.PAUSED
-                mic.level = 0f
-                setStatusText("PAUSED  ·  ${clock(state.elapsedMs)}")
-                pause.text = "▶"
-                pause.contentDescription = "Resume recording"
+            RecordingPhase.PROCESSING -> {
+                if (state.isLive && canInsert) renderLiveText(state)
+                showProcessing(state.statusLabel?.takeIf(String::isNotBlank)?.plus("…") ?: "Transcribing…", state.cleanupInProgress)
             }
-            RecordingPhase.PROCESSING ->
-                showProcessing(state.statusLabel?.takeIf { it.isNotBlank() }?.plus("…") ?: "Transcribing…", state.cleanupInProgress)
             RecordingPhase.SUCCESS -> {
-                if (state.resultText.isNotBlank()) {
-                    recordedEdit { currentInputConnection?.commitText(state.resultText, 1) }
+                if (canInsert && state.resultText.isNotBlank()) {
+                    clearLiveComposing()
+                    if (state.isLive && liveDeliveredText.isNotBlank()) {
+                        if (liveDeliveredText != state.resultText) replaceLiveTranscript(liveDeliveredText, state.resultText)
+                    } else {
+                        recordedEdit { currentInputConnection?.commitText(state.resultText, 1) }
+                    }
+                    batchRequestId = null
+                    liveDeliveredText = ""
+                    state.fallbackMessage?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
                 }
-                batchRequestId = null
                 showIdle()
-                state.fallbackMessage?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
             }
             RecordingPhase.ERROR -> {
-                batchRequestId = null
-                Toast.makeText(
-                    this,
-                    state.errorMessage ?: "Transcription failed.",
-                    Toast.LENGTH_LONG
-                ).show()
+                if (canInsert) {
+                    batchRequestId = null
+                    clearLiveComposing()
+                    Toast.makeText(this, state.errorMessage ?: "Transcription failed.", Toast.LENGTH_LONG).show()
+                }
                 showIdle()
             }
-            else -> Unit
+            RecordingPhase.IDLE -> showIdle()
         }
+    }
+
+    private fun renderLiveText(state: RecordingState) {
+        val finalText = state.liveFinalText
+        if (finalText.startsWith(liveDeliveredText)) {
+            val delta = finalText.removePrefix(liveDeliveredText)
+            if (delta.isNotEmpty()) {
+                clearLiveComposing()
+                currentInputConnection?.commitText(delta, 1)
+                liveDeliveredText = finalText
+            }
+        }
+        latestPartial = state.resultText.removePrefix(finalText)
+        currentInputConnection?.setComposingText(latestPartial, 1)
     }
 
     /**
@@ -1855,7 +1582,7 @@ class VoiceInputMethodService : InputMethodService() {
         mic.isEnabled = true
         mic.active = true
         mic.contentDescription = "Finish voice input"
-        val live = isLiveModel()
+        val live = RecordingController.state.value.takeIf { it.phase in ACTIVE_PHASES }?.isLive ?: isLiveModel()
         status.visibility = View.VISIBLE
         setStatusText(if (live) "LIVE" else "00:00")
         spaceKey.visibility = View.GONE
@@ -1891,7 +1618,6 @@ class VoiceInputMethodService : InputMethodService() {
     }
 
     private fun showIdle() {
-        stopWatchingBatchState()
         closeOverlay()
         uiMode = UiMode.IDLE
         mic.level = 0f
@@ -2454,6 +2180,7 @@ class VoiceInputMethodService : InputMethodService() {
 
     private fun selectModel(option: ModelOption) {
         selectedModelId = option.id
+        if (!ProviderModels.isStreaming(option.id)) AppContainer.settings.update { it.copy(selectedModel = option.id) }
         getSharedPreferences(IME_PREFERENCES, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_MODEL, selectedModelId)

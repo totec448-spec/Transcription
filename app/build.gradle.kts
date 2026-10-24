@@ -25,10 +25,11 @@ android {
 
     defaultConfig {
         applicationId = "io.github.totec448spec.transcription"
+        manifestPlaceholders["voiceInputLabel"] = "Transcription voice input"
         minSdk = 28
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.03"
+        versionCode = 5
+        versionName = "1.04"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -58,6 +59,14 @@ android {
             optimization {
                 enable = false
             }
+        }
+        create("preview") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            resValue("string", "app_name", "Transcription Preview")
+            manifestPlaceholders["voiceInputLabel"] = "Transcription Preview voice input"
+            matchingFallbacks += listOf("debug")
         }
         debug {
             // Same reasoning as the release type. Debug APKs are attached to CI

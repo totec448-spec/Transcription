@@ -192,6 +192,7 @@ enum class BaseCleanupMode(
 data class AppSettings(
     val selectedModel: String = ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO,
     val fallbackModel: String = ProviderModels.OPENROUTER_WHISPER_LARGE_V3,
+    val fallbackDelaySeconds: Int = 20,
     val language: String = "auto",
     val prompt: String = "",
     val multimodalPrompt: String = DEFAULT_MULTIMODAL_PROMPT,
@@ -502,6 +503,8 @@ data class RecordingState(
     val fallbackMessage: String? = null,
     val historyId: String? = null,
     val isLive: Boolean = false,
+    val liveFinalText: String = "",
+    val liveSilencePaused: Boolean = false,
     val modelId: String? = null,
     /**
      * What the pipeline is doing right now, in the pipeline's own words.

@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -1606,12 +1607,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                     updateSettings { current ->
                         current.copy(
                             selectedModel = selectedModel,
-                            fallbackModel = if (current.fallbackModel == selectedModel) {
-                                appModels.firstOrNull {
-                                    it.id != selectedModel && providerAvailability[it.provider] == true
-                                }?.id ?: appModels.firstOrNull { it.id != selectedModel }?.id
-                                ?: current.fallbackModel
-                            } else current.fallbackModel
+                            fallbackModel = current.fallbackModel
                         )
                     }
                 }
@@ -2082,7 +2078,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                         SettingDivider()
                         Text("Fallback model", style = MaterialTheme.typography.labelMedium)
                         Text(
-                            "Called automatically when the primary model returns an error.",
+                            "Used when the primary fails or reaches the delay below. Your selected model is saved.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2092,6 +2088,9 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                             providerAvailability
                         ) { fallback ->
                             updateSettings { it.copy(fallbackModel = fallback) }
+                        }
+                        FallbackDelayControl(settings.fallbackDelaySeconds) { seconds ->
+                            updateSettings { it.copy(fallbackDelaySeconds = seconds) }
                         }
                         SettingDivider()
                         Text("Audio sent to providers", style = MaterialTheme.typography.labelMedium)
@@ -2121,7 +2120,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                             listOf(5, 10, 20, 30, 60).map { it.toString() to "$it min" }
                         ) { value -> updateSettings { it.copy(maxAutomaticUploadMinutes = value.toInt()) } }
                         CompactChoicePicker(
-                            "Fallback timeout",
+                            "Provider request limit",
                             "${settings.providerTimeoutSeconds} sec",
                             listOf(10, 15, 20, 30, 60, 120).map { it.toString() to "$it sec" }
                         ) { value -> updateSettings { it.copy(providerTimeoutSeconds = value.toInt()) } }
@@ -3009,3 +3008,34 @@ private fun multimodalReasoningLabel(value: String, model: TranscriptionModel): 
         ?: "Model default"
 }
 private fun formatKhz(value: Int): String = if (value % 1_000 == 0) (value / 1_000).toString() else "%.2f".format(Locale.US, value / 1_000.0)
+
+@Composable
+private fun FallbackDelayControl(seconds: Int, onChange: (Int) -> Unit) {
+    var draft by remember(seconds) { mutableStateOf(seconds.toString()) }
+    Text("Switch to fallback after", style = MaterialTheme.typography.labelMedium)
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { text ->
+            if (text.length <= 2 && text.all(Char::isDigit)) {
+                draft = text
+                text.toIntOrNull()?.let { onChange(it.coerceIn(0, 20)) }
+            }
+        },
+        label = { Text("Seconds (0–20)") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Slider(
+        value = seconds.toFloat(),
+        onValueChange = { onChange(kotlin.math.round(it).toInt()) },
+        valueRange = 0f..20f,
+        steps = 19
+    )
+    Text(
+        if (seconds == 0) "Use the fallback immediately after recording stops."
+        else "After recording stops and audio is prepared, give the primary $seconds seconds, then use the fallback. The fallback keeps its own request limit.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}

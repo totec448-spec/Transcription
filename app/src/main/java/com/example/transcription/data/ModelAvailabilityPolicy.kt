@@ -33,16 +33,16 @@ object ModelAvailabilityPolicy {
         return preferenceOrder.firstOrNull { it.first in available }?.second ?: preferred
     }
 
-    /**
-     * The fallback is always the cheap OpenRouter Whisper Turbo, so a key-only
-     * ElevenLabs or AssemblyAI install has no reachable fallback and must not
-     * pretend otherwise — a second failing request only doubles the wait.
-     */
-    fun resolveFallback(primary: String, available: Set<TranscriptionProvider>): String {
-        if (TranscriptionProvider.OPENROUTER_STT !in available) return ""
-        if (primary == ProviderModels.OPENROUTER_WHISPER_V3_TURBO) return ""
-        return ProviderModels.OPENROUTER_WHISPER_V3_TURBO
-    }
+    /** Respect the saved choice; unavailable keys disable it without rewriting preferences. */
+    fun resolveFallback(
+        primary: String,
+        available: Set<TranscriptionProvider>,
+        preferred: String = ProviderModels.OPENROUTER_WHISPER_V3_TURBO
+    ): String = preferred.takeIf {
+        it.isNotBlank() && it != primary && !ProviderModels.isStreaming(it) &&
+            ProviderModels.provider(it) != TranscriptionProvider.OPENROUTER_TEXT &&
+            providerOf(it) in available
+    }.orEmpty()
 
     /**
      * Cleanup and the spoken Edit key both run on OpenRouter text models, so an

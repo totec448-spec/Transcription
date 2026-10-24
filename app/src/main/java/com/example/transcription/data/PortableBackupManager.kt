@@ -125,6 +125,7 @@ class PortableBackupManager(
     private fun settingsToJson(value: AppSettings) = JSONObject().apply {
         put("selectedModel", value.selectedModel)
         put("fallbackModel", value.fallbackModel)
+        put("fallbackDelaySeconds", value.fallbackDelaySeconds)
         put("language", value.language)
         put("prompt", value.prompt)
         put("multimodalPrompt", value.multimodalPrompt)
@@ -158,6 +159,7 @@ class PortableBackupManager(
         cleanupProviders = stringMapFromJson(json.optJSONObject("cleanupProviders")?.toString()),
         selectedModel = json.optString("selectedModel", ProviderModels.ELEVENLABS_SCRIBE_V2),
         fallbackModel = json.optString("fallbackModel", ProviderModels.OPENROUTER_WHISPER_LARGE_V3),
+        fallbackDelaySeconds = json.optInt("fallbackDelaySeconds", 20).coerceIn(0, 20),
         language = LanguageCode.normalize(json.optString("language", "auto")),
         prompt = json.optString("prompt"),
         multimodalPrompt = json.optString("multimodalPrompt", DEFAULT_MULTIMODAL_PROMPT),

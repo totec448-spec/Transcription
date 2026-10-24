@@ -37,6 +37,7 @@ class RecordingService : Service() {
     @Volatile private var activeEngine: BatchTranscriptionEngine? = null
     private var modelOverride: String? = null
     private var suppressAutomaticCopy = false
+    private var liveRecording: SharedLiveRecording? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -56,14 +57,10 @@ class RecordingService : Service() {
             )
             ACTION_TOGGLE_PAUSE -> if (!RecordingController.state.value.isLive) togglePause()
             ACTION_FINISH -> {
-                if (!LiveRecordingCoordinator.requestFinish() &&
-                    !RecordingController.state.value.isLive
-                ) {
-                    finishRecording()
-                }
+                liveRecording?.finish() ?: finishRecording()
             }
             ACTION_DISCARD -> {
-                if (!LiveRecordingCoordinator.requestDiscard()) discardRecording()
+                discardRecording()
             }
             ACTION_RETRY -> retryTranscription()
             ACTION_RETRANSCRIBE -> retranscribeHistory(intent.getStringExtra(EXTRA_HISTORY_ID))
@@ -73,7 +70,7 @@ class RecordingService : Service() {
                 val state = RecordingController.state.value
                 if (state.phase == RecordingPhase.PROCESSING && state.cleanupInProgress &&
                     (!intent.hasExtra(EXTRA_REQUEST_ID) || intent.getStringExtra(EXTRA_REQUEST_ID) == state.requestId)) {
-                    activeEngine?.skipCleanup()
+                    if (state.isLive) liveRecording?.skipCleanup() else activeEngine?.skipCleanup()
                 }
             }
             ACTION_CANCEL_REQUEST -> cancelRequest(intent.getStringExtra(EXTRA_REQUEST_ID))
@@ -97,10 +94,34 @@ class RecordingService : Service() {
         // Replace any terminal state before touching the recorder. An IME may
         // otherwise poll the previous SUCCESS while this command is still being
         // dispatched and insert an old transcript into a new editor.
-        RecordingController.set(RecordingState(requestId = requestId))
+        val sessionId = requestId ?: UUID.randomUUID().toString()
+        val selectedModel = requestedModel?.takeIf(String::isNotBlank) ?: AppContainer.settings.settings.value.selectedModel
+        RecordingController.set(RecordingState(requestId = sessionId, modelId = selectedModel))
         suppressAutomaticCopy = suppressCopy
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             fail("Microphone permission is required. Open the app once to grant it.")
+            return
+        }
+        if (com.example.transcription.data.ProviderModels.isStreaming(selectedModel)) {
+            val archive = File(filesDir, "latest/live-recording.wav").apply { parentFile?.mkdirs() }
+            val state = RecordingState(phase = RecordingPhase.RECORDING, requestId = sessionId,
+                modelId = selectedModel, isLive = true, audioPath = archive.absolutePath)
+            RecordingController.set(state)
+            NotificationHelper.cancelReady(this)
+            startForeground(NotificationHelper.ACTIVE_ID, NotificationHelper.active(this, state))
+            liveRecording = SharedLiveRecording(this, selectedModel, sessionId, archive,
+                onComplete = { text, duration, warning, cleanupCost ->
+                    liveRecording = null
+                    complete(text, duration, selectedModel, archive.absolutePath, warning,
+                        null, false, 1, cleanupCost, null, audioFormat = "wav")
+                },
+                onFailure = { message ->
+                    liveRecording = null
+                    fail(message)
+                },
+                onRefresh = { refreshActiveNotification(); TranscriptionWidgetProvider.updateAll(this) })
+
+            liveRecording?.start()
             return
         }
         val output = latestAudioFile().apply { parentFile?.mkdirs(); if (exists()) delete() }
@@ -134,7 +155,8 @@ class RecordingService : Service() {
         val state = RecordingState(
             phase = RecordingPhase.RECORDING,
             audioPath = output.absolutePath,
-            requestId = requestId
+            requestId = sessionId,
+            modelId = selectedModel
         )
         RecordingController.set(state)
         NotificationHelper.cancelReady(this)
@@ -278,6 +300,7 @@ class RecordingService : Service() {
                     multimodalPrompt = settings.multimodalPrompt,
                     multimodalReasoningEffort = settings.multimodalReasoningEffort,
                     providerTimeoutSeconds = settings.providerTimeoutSeconds,
+                    fallbackDelaySeconds = settings.fallbackDelaySeconds,
                     keepDebugSendCopies = settings.keepDebugSendCopies,
                     catalogModels = AppContainer.models.models.value,
                     trimSilence = settings.trimSilenceBeforeUpload
@@ -409,11 +432,12 @@ class RecordingService : Service() {
         costEstimated: Boolean,
         chunkCount: Int,
         cleanupCostUsd: Double?,
-        silenceRemovedMs: Long?
+        silenceRemovedMs: Long?,
+        audioFormat: String = "m4a"
     ) {
         val id = UUID.randomUUID().toString()
         val settings = AppContainer.settings.settings.value
-        val destination = File(filesDir, "audio_history/$id.m4a").apply { parentFile?.mkdirs() }
+        val destination = File(filesDir, "audio_history/$id.$audioFormat").apply { parentFile?.mkdirs() }
         val archivedPath = runCatching {
             File(sourcePath).copyTo(destination, overwrite = true)
             destination.absolutePath
@@ -426,6 +450,7 @@ class RecordingService : Service() {
                 durationMs = duration,
                 modelId = model,
                 audioPath = archivedPath,
+                audioFormat = audioFormat,
                 fallbackMessage = fallbackMessage,
                 costUsd = costUsd,
                 costEstimated = costEstimated,
@@ -451,7 +476,8 @@ class RecordingService : Service() {
                 statusLabel = null,
                 errorMessage = null,
                 fallbackMessage = fallbackMessage,
-                historyId = id
+                historyId = id,
+                audioPath = archivedPath
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -461,6 +487,8 @@ class RecordingService : Service() {
     }
 
     private fun discardRecording() {
+        liveRecording?.discard()
+        liveRecording = null
         handler.removeCallbacksAndMessages(null)
         runCatching { recorder?.stop() }
         recorder?.release()
@@ -486,6 +514,8 @@ class RecordingService : Service() {
         val state = RecordingController.state.value
         if (state.phase != RecordingPhase.PROCESSING) return
         val settings = AppContainer.settings.settings.value
+        liveRecording?.discard()
+        liveRecording = null
         activeEngine?.abandon(settings.cancelRequestOnAbandon)
         activeEngine = null
         if (state.historyId != null) {
@@ -595,6 +625,8 @@ class RecordingService : Service() {
     }
 
     override fun onDestroy() {
+        liveRecording?.close()
+        liveRecording = null
         handler.removeCallbacksAndMessages(null)
         releaseMeter()
         recorder?.release()

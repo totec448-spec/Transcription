@@ -30,7 +30,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * IME-only low-latency PCM transport. It intentionally does not post-process text and keeps
+ * Service-owned low-latency PCM transport. It intentionally does not post-process text and keeps
  * provider-specific WebSocket framing behind one callback contract.
  *
  * Three things shape the audio path:

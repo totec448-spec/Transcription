@@ -124,6 +124,7 @@ class AudioImportService : Service() {
                 multimodalPrompt = settings.multimodalPrompt,
                 multimodalReasoningEffort = settings.multimodalReasoningEffort,
                 providerTimeoutSeconds = settings.providerTimeoutSeconds,
+                    fallbackDelaySeconds = settings.fallbackDelaySeconds,
                 keepDebugSendCopies = settings.keepDebugSendCopies,
                 catalogModels = AppContainer.models.models.value,
                 trimSilence = settings.trimSilenceBeforeUpload

@@ -72,6 +72,8 @@ class TranscriptionProviderRegistry(
 ) {
     private val activeCall = AtomicReference<Call?>()
     private val cancellationGeneration = AtomicLong()
+    private var deadlineMs = Long.MAX_VALUE
+    private var requestGeneration = 0L
 
     /**
      * Set by the caller that wants to narrate the wait. Invoked on the calling
@@ -80,6 +82,8 @@ class TranscriptionProviderRegistry(
     var onStage: ((ProviderStage) -> Unit)? = null
 
     fun transcribe(request: ProviderTranscriptionRequest): ProviderTranscriptionResult {
+        deadlineMs = SystemClock.elapsedRealtime() + request.timeoutSeconds.coerceAtLeast(1) * 1_000L
+        requestGeneration = cancellationGeneration.get()
         val provider = ProviderModels.provider(request.modelId)
         val keyProvider = when (provider) {
             TranscriptionProvider.ELEVENLABS -> ApiKeyProvider.ELEVENLABS
@@ -255,7 +259,7 @@ class TranscriptionProviderRegistry(
         val id = submitted.optString("id")
         require(id.isNotBlank()) { submitted.optString("error", "AssemblyAI did not create a transcript job.") }
 
-        val deadline = SystemClock.elapsedRealtime() + value.timeoutSeconds * 1_000L
+        val deadline = deadlineMs
         var result = submitted
         // Backed off rather than fixed. A flat 350 ms meant a ten-second job
         // cost thirty round trips, each one a TLS request and a JSON parse, to
@@ -266,7 +270,7 @@ class TranscriptionProviderRegistry(
         var pollDelayMs = FIRST_POLL_DELAY_MS
         while (result.optString("status") in UNFINISHED_STATUSES) {
             if (SystemClock.elapsedRealtime() >= deadline) throw IOException("AssemblyAI timed out.")
-            Thread.sleep(pollDelayMs)
+            Thread.sleep(minOf(pollDelayMs, (deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1L)))
             pollDelayMs = (pollDelayMs * POLL_BACKOFF / 100).coerceAtMost(MAX_POLL_DELAY_MS)
             result = execute(
                 Request.Builder()
@@ -298,15 +302,19 @@ class TranscriptionProviderRegistry(
         carriesAudio: Boolean = false,
         returnsTranscript: Boolean = false
     ): HttpResult {
+        if (cancellationGeneration.get() != requestGeneration) throw IOException("Transcription cancelled")
+        val remainingMs = minOf(timeoutSeconds * 1_000L, deadlineMs - SystemClock.elapsedRealtime())
+        if (remainingMs <= 0L) throw IOException("Transcription timed out")
         val client = baseClient.newBuilder()
-            .connectTimeout(minOf(timeoutSeconds, 20).toLong(), TimeUnit.SECONDS)
-            .writeTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
-            .readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
-            .callTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+            .connectTimeout(minOf(remainingMs, 20_000L), TimeUnit.MILLISECONDS)
+            .writeTimeout(remainingMs, TimeUnit.MILLISECONDS)
+            .readTimeout(remainingMs, TimeUnit.MILLISECONDS)
+            .callTimeout(remainingMs, TimeUnit.MILLISECONDS)
             .apply { stageListener(carriesAudio, returnsTranscript)?.let { eventListener(it) } }
             .build()
         val call = client.newCall(request)
         activeCall.set(call)
+        if (cancellationGeneration.get() != requestGeneration) call.cancel()
         val started = SystemClock.elapsedRealtime()
         try {
             call.execute().use { response ->

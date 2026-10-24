@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -474,7 +475,7 @@ private fun ActiveRecorder(state: RecordingState, action: (String) -> Unit) {
         Text(duration(state.elapsedMs), fontSize = 44.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp, modifier = Modifier.padding(top = 6.dp))
         LivingWaveform(state.waveform, state.phase == RecordingPhase.RECORDING, Modifier.fillMaxWidth().height(112.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            ControlAction(if (state.phase == RecordingPhase.PAUSED) VoiceIcon.PLAY else VoiceIcon.PAUSE, if (state.phase == RecordingPhase.PAUSED) "Resume" else "Pause") { action(RecordingService.ACTION_TOGGLE_PAUSE) }
+            if (!state.isLive) ControlAction(if (state.phase == RecordingPhase.PAUSED) VoiceIcon.PLAY else VoiceIcon.PAUSE, if (state.phase == RecordingPhase.PAUSED) "Resume" else "Pause") { action(RecordingService.ACTION_TOGGLE_PAUSE) }
             ControlAction(VoiceIcon.CLOSE, "Discard") { action(RecordingService.ACTION_DISCARD) }
             ControlAction(VoiceIcon.CHECK, "Done", emphasized = true) { action(RecordingService.ACTION_FINISH) }
         }
@@ -491,7 +492,7 @@ private fun ProcessingState(action: (String) -> Unit) {
         Text(if (state.cleanupInProgress) "Tap to skip cleanup" else "Writing it down…", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp))
         Text("The recording is already safe.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
         Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (!state.cleanupInProgress) OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
+            if (!state.cleanupInProgress && !state.isLive) OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
             OutlinedButton(onClick = { action(RecordingService.ACTION_ABANDON) }) { Text("Abandon") }
         }
     }
@@ -1606,12 +1607,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                     updateSettings { current ->
                         current.copy(
                             selectedModel = selectedModel,
-                            fallbackModel = if (current.fallbackModel == selectedModel) {
-                                appModels.firstOrNull {
-                                    it.id != selectedModel && providerAvailability[it.provider] == true
-                                }?.id ?: appModels.firstOrNull { it.id != selectedModel }?.id
-                                ?: current.fallbackModel
-                            } else current.fallbackModel
+                            fallbackModel = current.fallbackModel
                         )
                     }
                 }
@@ -2082,7 +2078,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                         SettingDivider()
                         Text("Fallback model", style = MaterialTheme.typography.labelMedium)
                         Text(
-                            "Called automatically when the primary model returns an error.",
+                            "Used when the primary fails or reaches the delay below. Your selected model is saved.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2092,6 +2088,9 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                             providerAvailability
                         ) { fallback ->
                             updateSettings { it.copy(fallbackModel = fallback) }
+                        }
+                        FallbackDelayControl(settings.fallbackDelaySeconds) { seconds ->
+                            updateSettings { it.copy(fallbackDelaySeconds = seconds) }
                         }
                         SettingDivider()
                         Text("Audio sent to providers", style = MaterialTheme.typography.labelMedium)
@@ -2121,7 +2120,7 @@ private fun SettingsScreen(modifier: Modifier = Modifier) {
                             listOf(5, 10, 20, 30, 60).map { it.toString() to "$it min" }
                         ) { value -> updateSettings { it.copy(maxAutomaticUploadMinutes = value.toInt()) } }
                         CompactChoicePicker(
-                            "Fallback timeout",
+                            "Provider request limit",
                             "${settings.providerTimeoutSeconds} sec",
                             listOf(10, 15, 20, 30, 60, 120).map { it.toString() to "$it sec" }
                         ) { value -> updateSettings { it.copy(providerTimeoutSeconds = value.toInt()) } }
@@ -3009,3 +3008,35 @@ private fun multimodalReasoningLabel(value: String, model: TranscriptionModel): 
         ?: "Model default"
 }
 private fun formatKhz(value: Int): String = if (value % 1_000 == 0) (value / 1_000).toString() else "%.2f".format(Locale.US, value / 1_000.0)
+
+@Composable
+private fun FallbackDelayControl(seconds: Int, onChange: (Int) -> Unit) {
+    var draft by remember(seconds) { mutableStateOf(seconds.toString()) }
+    Text("Switch to fallback after", style = MaterialTheme.typography.labelMedium)
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { text ->
+            if (text.length <= 2 && text.all(Char::isDigit)) {
+                val parsed = text.toIntOrNull()
+                draft = if (parsed != null && parsed > 20) "20" else text
+                parsed?.let { onChange(it.coerceIn(0, 20)) }
+            }
+        },
+        label = { Text("Seconds (0–20)") },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Slider(
+        value = seconds.toFloat(),
+        onValueChange = { onChange(kotlin.math.round(it).toInt()) },
+        valueRange = 0f..20f,
+        steps = 19
+    )
+    Text(
+        if (seconds == 0) "Use the fallback immediately after recording stops."
+        else "After recording stops and audio is prepared, give the primary $seconds seconds, then use the fallback. The fallback keeps its own request limit.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}

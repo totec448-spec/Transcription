@@ -68,29 +68,13 @@ object AppContainer {
     fun resolvedTranscriptionModels(preferredPrimary: String): Pair<String, String> {
         val available = availableProviders()
         val primary = ModelAvailabilityPolicy.resolvePrimary(preferredPrimary, available)
-        return primary to ModelAvailabilityPolicy.resolveFallback(primary, available)
+        return primary to ModelAvailabilityPolicy.resolveFallback(primary, available, settings.settings.value.fallbackModel)
     }
 
-    /**
-     * Writes the resolved choice back into settings, and must be called whenever
-     * the set of stored keys changes.
-     *
-     * [resolvedTranscriptionModels] already corrects every request, but it does
-     * so invisibly: the settings screen reads the *stored* model, so an install
-     * holding only an OpenRouter key kept showing the shipped AssemblyAI default
-     * while quietly transcribing on something else. Saving the resolution makes
-     * the two agree, which is the whole point of one key being enough.
-     *
-     * The fallback follows only when it resolves to something reachable. A blank
-     * one means "no usable second attempt", which SettingsStore deliberately
-     * rewrites to a default, so storing it would trade this mismatch for another
-     * one — requests already blank it themselves at the moment they are sent.
-     */
+    /** Correct an unreachable primary without changing the user's fallback preference. */
     fun persistResolvedTranscriptionModel() {
         val current = settings.settings.value
-        val (primary, fallback) = resolvedTranscriptionModels(current.selectedModel)
-        val nextFallback = fallback.takeIf { it.isNotBlank() } ?: current.fallbackModel
-        if (primary == current.selectedModel && nextFallback == current.fallbackModel) return
-        settings.update { it.copy(selectedModel = primary, fallbackModel = nextFallback) }
+        val primary = ModelAvailabilityPolicy.resolvePrimary(current.selectedModel, availableProviders())
+        if (primary != current.selectedModel) settings.update { it.copy(selectedModel = primary) }
     }
 }

@@ -87,6 +87,7 @@ class BatchTranscriptionEngine(
         // The spoken Edit instruction runs through this same engine and must
         // stay raw: cleaning it would rewrite the command instead of the text.
         applyBaseCleanup: Boolean = true,
+        fallbackDelaySeconds: Int = 20,
         onProgress: (BatchProgress) -> Unit = {}
     ): BatchTranscription {
         var partIndex = 0
@@ -158,7 +159,8 @@ class BatchTranscriptionEngine(
         try {
             prepared.chunks.forEachIndexed { index, chunk ->
                 if (abandoned.get()) throw TranscriptionAbandonedException()
-                val attemptedPrimary = !fallbackRequested.get()
+                val hasFallback = fallbackModel.isNotBlank() && fallbackModel != primaryModel
+                val attemptedPrimary = FallbackTimingPolicy.attemptPrimary(hasFallback, fallbackRequested.get(), fallbackDelaySeconds)
                 val selectedModel = if (attemptedPrimary) primaryModel else fallbackModel
                 val providerLabel = com.example.transcription.data.ProviderModels.provider(selectedModel).label
                 partIndex = index
@@ -175,7 +177,7 @@ class BatchTranscriptionEngine(
                         multimodalPrompt,
                         MultimodalReasoningResolver.resolve(selectedModel, multimodalReasoningEffort, catalogModels),
                         MultimodalParameterResolver.supportsTemperature(selectedModel, catalogModels),
-                        providerTimeoutSeconds,
+                        FallbackTimingPolicy.requestSeconds(attemptedPrimary, hasFallback, fallbackDelaySeconds, providerTimeoutSeconds),
                         keepDebugSendCopies,
                         trimPerChunk,
                         chunkDurationMs

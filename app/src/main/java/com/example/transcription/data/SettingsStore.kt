@@ -15,9 +15,10 @@ class SettingsStore(context: Context) {
     @Synchronized
     fun update(transform: (AppSettings) -> AppSettings) {
         val proposed = transform(_settings.value).let {
-            it.copy(cleanupMinimumInstructionWords = it.cleanupMinimumInstructionWords.coerceIn(0, 50))
+            it.copy(cleanupMinimumInstructionWords = it.cleanupMinimumInstructionWords.coerceIn(0, 50),
+                fallbackDelaySeconds = it.fallbackDelaySeconds.coerceIn(0, 20))
         }
-        val value = if (proposed.fallbackModel.isBlank() || proposed.fallbackModel == proposed.selectedModel) {
+        val value = if (proposed.fallbackModel.isBlank()) {
             proposed.copy(fallbackModel = defaultFallbackFor(proposed.selectedModel))
         } else proposed
         _settings.value = value
@@ -33,6 +34,7 @@ class SettingsStore(context: Context) {
         editor
             .putString("model", value.selectedModel)
             .putString("fallback_model", value.fallbackModel)
+            .putInt("fallback_delay_seconds", value.fallbackDelaySeconds)
             .putString("language", value.language)
             .putString("prompt", value.prompt)
             .putString("multimodal_prompt", value.multimodalPrompt)
@@ -115,7 +117,7 @@ class SettingsStore(context: Context) {
         migrateBaseCleanupPrompts()
         val selectedModel = preferences.getString("model", null) ?: PRIMARY_DEFAULT
         val storedFallback = preferences.getString("fallback_model", null)
-        val fallbackModel = storedFallback?.takeIf { it.isNotBlank() && it != selectedModel }
+        val fallbackModel = storedFallback?.takeIf { it.isNotBlank() }
             ?: defaultFallbackFor(selectedModel)
         val hasCurrentAudioQuality = preferences.getInt("audio_quality_version", 0) >= AUDIO_QUALITY_VERSION
         val defaultAudio = AudioCaptureOptions.highestCompressed
@@ -123,6 +125,7 @@ class SettingsStore(context: Context) {
             cleanupProviders = stringMapFromJson(preferences.getString("cleanup_providers", null)),
             selectedModel = selectedModel,
             fallbackModel = fallbackModel,
+            fallbackDelaySeconds = preferences.getInt("fallback_delay_seconds", 20).coerceIn(0, 20),
             language = LanguageCode.normalize(preferences.getString("language", null) ?: "auto"),
             prompt = preferences.getString("prompt", null) ?: "",
             multimodalPrompt = preferences.getString("multimodal_prompt", null) ?: DEFAULT_MULTIMODAL_PROMPT,

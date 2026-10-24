@@ -86,7 +86,7 @@ class ModelAvailabilityPolicyTest {
     }
 
     @Test
-    fun fallbackIsAlwaysWhisperTurboWhileOpenRouterIsReachable() {
+    fun defaultFallbackUsesWhisperTurboWhileOpenRouterIsReachable() {
         assertEquals(
             ProviderModels.OPENROUTER_WHISPER_V3_TURBO,
             ModelAvailabilityPolicy.resolveFallback(ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO, all)
@@ -113,4 +113,32 @@ class ModelAvailabilityPolicyTest {
             ModelAvailabilityPolicy.resolveFallback(ProviderModels.OPENROUTER_WHISPER_V3_TURBO, all)
         )
     }
+    @Test
+    fun explicitlySelectedFallbackWinsOverWhisperTurbo() {
+        assertEquals(ProviderModels.ELEVENLABS_SCRIBE_V2,
+            ModelAvailabilityPolicy.resolveFallback(ProviderModels.OPENROUTER_GPT_TRANSCRIBE, all,
+                ProviderModels.ELEVENLABS_SCRIBE_V2))
+        assertEquals(ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO,
+            ModelAvailabilityPolicy.resolveFallback(ProviderModels.ELEVENLABS_SCRIBE_V2, all,
+                ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO))
+        assertEquals(ProviderModels.OPENROUTER_GPT_TRANSCRIBE,
+            ModelAvailabilityPolicy.resolveFallback(ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO, all,
+                ProviderModels.OPENROUTER_GPT_TRANSCRIBE))
+    }
+
+    @Test
+    fun unavailableOrDuplicateSavedFallbackIsDisabled() {
+        assertEquals("", ModelAvailabilityPolicy.resolveFallback(ProviderModels.OPENROUTER_GPT_TRANSCRIBE,
+            openRouter, ProviderModels.ELEVENLABS_SCRIBE_V2))
+        assertEquals("", ModelAvailabilityPolicy.resolveFallback(ProviderModels.ELEVENLABS_SCRIBE_V2,
+            all, ProviderModels.ELEVENLABS_SCRIBE_V2))
+    }
+
+    @Test
+    fun selectedFallbackWorksWithoutAnOpenRouterKey() {
+        assertEquals(ProviderModels.ELEVENLABS_SCRIBE_V2,
+            ModelAvailabilityPolicy.resolveFallback(ProviderModels.ASSEMBLYAI_UNIVERSAL_3_5_PRO,
+                assemblyAi + elevenLabs, ProviderModels.ELEVENLABS_SCRIBE_V2))
+    }
+
 }

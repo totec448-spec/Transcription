@@ -28,7 +28,7 @@ jobs:
           path: ~/.android/debug.keystore
           key: transcription-preview-debug-signing-v1
       - name: Unit tests and APK
-        run: ./gradlew testPreviewUnitTest assemblePreview
+        run: ./gradlew testDebugUnitTest assemblePreview
       - name: Verify APK signature
         run: |
           APK=app/build/outputs/apk/preview/app-preview.apk

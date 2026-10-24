@@ -475,7 +475,7 @@ private fun ActiveRecorder(state: RecordingState, action: (String) -> Unit) {
         Text(duration(state.elapsedMs), fontSize = 44.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp, modifier = Modifier.padding(top = 6.dp))
         LivingWaveform(state.waveform, state.phase == RecordingPhase.RECORDING, Modifier.fillMaxWidth().height(112.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            ControlAction(if (state.phase == RecordingPhase.PAUSED) VoiceIcon.PLAY else VoiceIcon.PAUSE, if (state.phase == RecordingPhase.PAUSED) "Resume" else "Pause") { action(RecordingService.ACTION_TOGGLE_PAUSE) }
+            if (!state.isLive) ControlAction(if (state.phase == RecordingPhase.PAUSED) VoiceIcon.PLAY else VoiceIcon.PAUSE, if (state.phase == RecordingPhase.PAUSED) "Resume" else "Pause") { action(RecordingService.ACTION_TOGGLE_PAUSE) }
             ControlAction(VoiceIcon.CLOSE, "Discard") { action(RecordingService.ACTION_DISCARD) }
             ControlAction(VoiceIcon.CHECK, "Done", emphasized = true) { action(RecordingService.ACTION_FINISH) }
         }
@@ -492,7 +492,7 @@ private fun ProcessingState(action: (String) -> Unit) {
         Text(if (state.cleanupInProgress) "Tap to skip cleanup" else "Writing it down…", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp))
         Text("The recording is already safe.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
         Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (!state.cleanupInProgress) OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
+            if (!state.cleanupInProgress && !state.isLive) OutlinedButton(onClick = { action(RecordingService.ACTION_USE_FALLBACK) }) { Text("Use fallback") }
             OutlinedButton(onClick = { action(RecordingService.ACTION_ABANDON) }) { Text("Abandon") }
         }
     }

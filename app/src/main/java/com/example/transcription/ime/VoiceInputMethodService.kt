@@ -1430,7 +1430,6 @@ class VoiceInputMethodService : InputMethodService() {
                 .setAction(RecordingService.ACTION_START)
                 .putExtra(RecordingService.EXTRA_MODEL_OVERRIDE, selectedModelId)
                 .putExtra(RecordingService.EXTRA_REQUEST_ID, requestId)
-                .putExtra(RecordingService.EXTRA_SUPPRESS_AUTO_COPY, true)
         )
         showRecording()
         watchBatchState()
@@ -1494,8 +1493,8 @@ class VoiceInputMethodService : InputMethodService() {
 
     private fun clearLiveComposing() {
         if (latestPartial.isNotBlank()) {
-            currentInputConnection?.setComposingText("", 1)
-            currentInputConnection?.finishComposingText()
+            editorConnection?.setComposingText("", 1)
+            editorConnection?.finishComposingText()
         }
         latestPartial = ""
     }

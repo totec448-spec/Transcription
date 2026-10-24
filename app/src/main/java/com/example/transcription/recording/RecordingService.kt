@@ -120,7 +120,7 @@ class RecordingService : Service() {
                     fail(message)
                 },
                 onRefresh = { refreshActiveNotification(); TranscriptionWidgetProvider.updateAll(this) })
-                
+
             liveRecording?.start()
             return
         }

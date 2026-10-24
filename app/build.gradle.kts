@@ -100,6 +100,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
     buildFeatures {
+        resValues = true
         compose = true
     }
 }

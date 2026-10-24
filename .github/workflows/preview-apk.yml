@@ -22,6 +22,11 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      - name: Keep the preview signing identity between builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: transcription-preview-debug-signing-v1
       - name: Unit tests and APK
         run: ./gradlew testPreviewUnitTest assemblePreview
       - name: Verify APK signature

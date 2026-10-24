@@ -3017,8 +3017,9 @@ private fun FallbackDelayControl(seconds: Int, onChange: (Int) -> Unit) {
         value = draft,
         onValueChange = { text ->
             if (text.length <= 2 && text.all(Char::isDigit)) {
-                draft = text
-                text.toIntOrNull()?.let { onChange(it.coerceIn(0, 20)) }
+                val parsed = text.toIntOrNull()
+                draft = if (parsed != null && parsed > 20) "20" else text
+                parsed?.let { onChange(it.coerceIn(0, 20)) }
             }
         },
         label = { Text("Seconds (0–20)") },
